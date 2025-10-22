@@ -7,6 +7,7 @@ use std::fs::File;
 use std::io::{self, Write};
 use std::path::Path;
 use serde_derive::{Serialize, Deserialize};
+use super::depot::Depot;
 
 pub type LabelPattern = Vec<u32>;
 
@@ -23,6 +24,7 @@ pub struct CondRecord {
     pub arg1: u64,
     pub arg2: u64,
     pub offsets: Vec<TagSeg>,
+    pub critical_values: Vec<Vec<u8>>,
 }
 
 lazy_static! {
@@ -66,7 +68,29 @@ pub fn extract_pattern_merged(offsets: &Vec<TagSeg>) -> LabelPattern {
   merged.iter().map(|seg| seg.end - seg.begin).collect()
 }
 
-pub fn add_cond_to_pattern_map(cond: &CondStmt) {
+fn extract_value_from_label(offsets: &Vec<TagSeg>, input_buf: &Vec<u8>) -> Vec<Vec<u8>> {
+  let merged_offsets = merge_continuous_segments(offsets);
+  let mut critical_values = Vec::new();
+
+  for seg in &merged_offsets {
+      let begin = seg.begin as usize;
+      let end = seg.end as usize;
+
+      if end <= input_buf.len() {
+        critical_values.push(input_buf[begin..end].to_vec());
+      } else if begin < input_buf.len() {
+          let mut bytes = input_buf[begin..].to_vec();
+          bytes.resize(end - begin, 0);
+          critical_values.push(bytes);
+      } else {
+        critical_values.push(vec![0u8; end - begin]);
+      }
+  }
+
+  critical_values
+}
+
+pub fn add_cond_to_pattern_map(cond: &CondStmt, depot: &Depot) {
   if (cond.base.lb1 > 0) != (cond.base.lb2 > 0) {
       if cond.offsets.is_empty() {
           return;
@@ -84,7 +108,10 @@ pub fn add_cond_to_pattern_map(cond: &CondStmt) {
 
        added_ids.insert(cond_id);
 
-      let pattern = extract_pattern_merged(&cond.offsets);
+      let belong_id = cond.base.belong as usize;
+      let input_buf = depot.get_input_buf(belong_id);
+      let critical_values = extract_value_from_label(&cond.offsets, &input_buf);
+
       let record = CondRecord {
           cmpid: cond.base.cmpid,
           order: cond.base.order,
@@ -97,6 +124,7 @@ pub fn add_cond_to_pattern_map(cond: &CondStmt) {
           arg1: cond.base.arg1,
           arg2: cond.base.arg2,
           offsets: cond.offsets.clone(),
+          critical_values,
       };
 
       let mut map = LABEL_PATTERN_MAP.lock().unwrap();
@@ -156,6 +184,7 @@ pub fn save_to_text(path: &Path) -> io::Result<()> {
          i, record.cmpid, record.order, record.context, record.op, record.lb1, record.lb2, record.condition, record.belong, record.arg1, record.arg2)?;
 
         // writeln!(file, "        Offsets: {:?}", record.offsets)?;
+        writeln!(file, "        Critical values: {:?}", record.critical_values)?;
       }
       writeln!(file)?;
   }

@@ -148,7 +148,7 @@ impl Depot {
                     }
                 } else {
                     let priority = QPriority::init(cond.base.op);
-                    label_pattern_tracker::add_cond_to_pattern_map(&cond);
+                    label_pattern_tracker::add_cond_to_pattern_map(&cond, self);
                     q.push(cond, priority);
 
                 }
