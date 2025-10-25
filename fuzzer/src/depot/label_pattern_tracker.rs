@@ -31,7 +31,7 @@ lazy_static! {
     pub static ref LABEL_PATTERN_MAP: Mutex<HashMap<LabelPattern, Vec<CondRecord>>> =
       Mutex::new(HashMap::new());
 
-    static ref ADDED_COND_IDS: Mutex<HashSet<(u32, u32, u32, LabelPattern)>> =
+    static ref ADDED_COND_IDS: Mutex<HashSet<(u32, u32, u32, LabelPattern, u8)>> =
       Mutex::new(HashSet::new());
 }
 
@@ -90,50 +90,78 @@ fn extract_value_from_label(offsets: &Vec<TagSeg>, input_buf: &Vec<u8>) -> Vec<V
   critical_values
 }
 
+fn create_record_for_offsets(
+    offsets: &Vec<TagSeg>,
+    cond: &CondStmt,
+    depot: &Depot,
+    operand_num: u8,
+) {
+    if offsets.is_empty() {
+        return;
+    }
+
+    let pattern = extract_pattern_merged(offsets);
+    let cond_id = (
+        cond.base.cmpid,
+        cond.base.order >> 16,
+        cond.base.condition,
+        pattern.clone(),
+        operand_num,
+    );
+
+    let mut added_ids = ADDED_COND_IDS.lock().unwrap();
+    if added_ids.contains(&cond_id) {
+        return;
+    }
+
+    added_ids.insert(cond_id);
+    drop(added_ids);
+
+    let belong_id = cond.base.belong as usize;
+    let input_buf = depot.get_input_buf(belong_id);
+    let critical_values = extract_value_from_label(offsets, &input_buf);
+
+    let record = CondRecord {
+        cmpid: cond.base.cmpid,
+        order: cond.base.order,
+        context: cond.base.context,
+        op: cond.base.op,
+        lb1: cond.base.lb1,
+        lb2: cond.base.lb2,
+        condition: cond.base.condition,
+        belong: cond.base.belong,
+        arg1: cond.base.arg1,
+        arg2: cond.base.arg2,
+        offsets: offsets.clone(),
+        critical_values,
+    };
+
+    let mut map = LABEL_PATTERN_MAP.lock().unwrap();
+    map.entry(pattern).or_insert_with(Vec::new).push(record);
+}
+
+fn add_single_label_record(cond: &CondStmt, depot: &Depot) {
+    create_record_for_offsets(&cond.offsets, cond, depot, 0);
+}
+
+fn add_dual_label_records(cond: &CondStmt, depot: &Depot) {
+    if cond.offsets_opt.is_empty() {
+        return;
+    }
+
+    create_record_for_offsets(&cond.offsets, cond, depot, 1);
+    create_record_for_offsets(&cond.offsets_opt, cond, depot, 2);
+}
+
 pub fn add_cond_to_pattern_map(cond: &CondStmt, depot: &Depot) {
-  if (cond.base.lb1 > 0) != (cond.base.lb2 > 0) {
-      if cond.offsets.is_empty() {
-          return;
-      }
-
-      let pattern = extract_pattern_merged(&cond.offsets);
-      let cond_id = (cond.base.cmpid, cond.base.order >> 16, cond.base.condition, pattern.clone());
-
-      let mut added_ids = ADDED_COND_IDS.lock().unwrap();
-       if added_ids.contains(&cond_id) {
-           info!("[LabelPattern] Skipped duplicate: cmpid={}, order_high={}, condition={}",
-                 cond.base.cmpid, cond.base.order >> 16, cond.base.condition);
-           return;
-       }
-
-       added_ids.insert(cond_id);
-
-      let belong_id = cond.base.belong as usize;
-      let input_buf = depot.get_input_buf(belong_id);
-      let critical_values = extract_value_from_label(&cond.offsets, &input_buf);
-
-      let record = CondRecord {
-          cmpid: cond.base.cmpid,
-          order: cond.base.order,
-          context: cond.base.context,
-          op: cond.base.op,
-          lb1: cond.base.lb1,
-          lb2: cond.base.lb2,
-          condition: cond.base.condition,
-          belong: cond.base.belong,
-          arg1: cond.base.arg1,
-          arg2: cond.base.arg2,
-          offsets: cond.offsets.clone(),
-          critical_values,
-      };
-
-      let mut map = LABEL_PATTERN_MAP.lock().unwrap();
-      map.entry(pattern.clone()).or_insert_with(Vec::new).push(record.clone());
-
-      let original_pattern = extract_pattern(&cond.offsets);
-      let merged_pattern = pattern.clone();
-
-      // info!("[LabelPattern] Added: pattern={:?} (original: {:?}), cmpid={}, order={} (high={}), context={}, op={:#x}, lb1={}, lb2={}, condition={}, belong={}, arg1={}, arg2={}", merged_pattern, original_pattern, record.cmpid, record.order, record.order >> 16, record.context, record.op, record.lb1, record.lb2, record.condition, record.belong, record.arg1, record.arg2);
+  if cond.base.lb1 > 0 && cond.base.lb2 == 0 {
+      add_single_label_record(cond, depot);
+  }
+  else if cond.base.lb1 == 0 && cond.base.lb2 > 0 {
+      add_single_label_record(cond, depot);
+  }
+  else if cond.base.lb1 > 0 && cond.base.lb2 > 0 {
+      add_dual_label_records(cond, depot);
   }
 }
 
@@ -183,7 +211,6 @@ pub fn save_to_text(path: &Path) -> io::Result<()> {
         writeln!(file, "    [{}] cmpid={}, order={}, context={}, op={:#x}, lb1={}, lb2={}, condition={}, belong={}, arg1={}, arg2={}",
          i, record.cmpid, record.order, record.context, record.op, record.lb1, record.lb2, record.condition, record.belong, record.arg1, record.arg2)?;
 
-        // writeln!(file, "        Offsets: {:?}", record.offsets)?;
         writeln!(file, "        Critical values: {:?}", record.critical_values)?;
       }
       writeln!(file)?;
