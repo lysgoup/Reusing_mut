@@ -121,22 +121,33 @@ fn create_record_for_offsets(
     let input_buf = depot.get_input_buf(belong_id);
     let critical_values = extract_value_from_label(offsets, &input_buf);
 
-    let record = CondRecord {
-        cmpid: cond.base.cmpid,
-        order: cond.base.order,
-        context: cond.base.context,
-        op: cond.base.op,
-        lb1: cond.base.lb1,
-        lb2: cond.base.lb2,
-        condition: cond.base.condition,
-        belong: cond.base.belong,
-        arg1: cond.base.arg1,
-        arg2: cond.base.arg2,
-        offsets: offsets.clone(),
-        critical_values,
-    };
-
     let mut map = LABEL_PATTERN_MAP.lock().unwrap();
+    
+    //value가 존재하면 스킵
+    if let Some(existing_records) = map.get(&pattern) {
+      for existing in existing_records.iter() {
+          if existing.critical_values == critical_values {
+              // info!("[LabelPattern] Skipped duplicate critical_value: pattern={:?}, values={:?}", pattern, critical_value);
+              return;
+          }
+      }
+    }
+
+    let record = CondRecord {
+      cmpid: cond.base.cmpid,
+      order: cond.base.order,
+      context: cond.base.context,
+      op: cond.base.op,
+      lb1: cond.base.lb1,
+      lb2: cond.base.lb2,
+      condition: cond.base.condition,
+      belong: cond.base.belong,
+      arg1: cond.base.arg1,
+      arg2: cond.base.arg2,
+      offsets: offsets.clone(),
+      critical_values,
+  };
+
     map.entry(pattern).or_insert_with(Vec::new).push(record);
 }
 
@@ -211,6 +222,7 @@ pub fn save_to_text(path: &Path) -> io::Result<()> {
         writeln!(file, "    [{}] cmpid={}, order={}, context={}, op={:#x}, lb1={}, lb2={}, condition={}, belong={}, arg1={}, arg2={}",
          i, record.cmpid, record.order, record.context, record.op, record.lb1, record.lb2, record.condition, record.belong, record.arg1, record.arg2)?;
 
+        writeln!(file, "        Offsets: {:?}", record.offsets)?;
         writeln!(file, "        Critical values: {:?}", record.critical_values)?;
       }
       writeln!(file)?;
