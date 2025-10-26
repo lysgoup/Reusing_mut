@@ -11,6 +11,8 @@ pub use self::label_pattern_tracker::{
   add_cond_to_pattern_map,
   print_stats as print_pattern_stats,
   save_to_text,
-  LABEL_PATTERN_MAP
+  LABEL_PATTERN_MAP,
+  extract_pattern_merged,
+  CondRecord,
 };
 use self::{depot_dir::DepotDir, qpriority::QPriority};

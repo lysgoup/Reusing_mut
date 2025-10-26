@@ -7,6 +7,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, RwLock,
 };
+use crate::search::apply_reusing_mutation;
 
 pub fn fuzz_loop(
     running: Arc<AtomicBool>,
@@ -66,9 +67,11 @@ pub fn fuzz_loop(
 
         {
             let fuzz_type = cond.get_fuzz_type();
-            let handler = SearchHandler::new(running.clone(), &mut executor, &mut cond, buf);
+            let mut handler = SearchHandler::new(running.clone(), &mut executor, &mut cond, buf);
             match fuzz_type {
                 FuzzType::ExploreFuzz => {
+                    apply_reusing_mutation(&mut handler, 100);
+
                     if handler.cond.is_time_expired() {
                         handler.cond.next_state();
                     }
@@ -94,6 +97,8 @@ pub fn fuzz_loop(
                     }
                 },
                 FuzzType::ExploitFuzz => {
+                    apply_reusing_mutation(&mut handler, 100);
+
                     if handler.cond.state.is_one_byte() {
                         let mut fz = OneByteFuzz::new(handler);
                         fz.run();
