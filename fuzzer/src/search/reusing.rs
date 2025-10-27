@@ -8,6 +8,7 @@ use crate::stats::REUSING_STATS;
 pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) -> bool {
     // ✅ 1. local_stats 전체 백업
     let snapshot = handler.executor.local_stats.snapshot();
+    let buf_backup = handler.buf.clone();
 
     // 2. pattern 추출
     let pattern = extract_pattern_merged(&handler.cond.offsets);
@@ -84,6 +85,7 @@ pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) ->
 
     // ✅ 7. local_stats를 백업으로 복원 (다음 mutation에서 reusing이 카운트 안 되도록)
     handler.executor.local_stats.restore(&snapshot);
+    handler.buf = buf_backup;
 
     // ✅ 복원 후 로그
     // info!("[Reusing] Restored local_stats: exec={}, inputs={}, hangs={}, crashes={}",
