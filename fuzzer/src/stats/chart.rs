@@ -3,6 +3,7 @@ use crate::{branches::GlobalBranches, depot::Depot};
 use colored::*;
 use serde_derive::Serialize;
 use std::sync::Arc;
+use crate::stats::REUSING_STATS;
 
 #[derive(Default, Serialize)]
 pub struct ChartStats {
@@ -23,6 +24,7 @@ pub struct ChartStats {
     num_crashes: Counter,
 
     fuzz: FuzzStats,
+    reusing: ReusingStats,
     search: SearchStats,
     state: StateStats,
 }
@@ -60,6 +62,12 @@ impl ChartStats {
         self.get_speed();
         self.iter_pq(depot);
         self.sync_from_branches(gb);
+        self.sync_reusing_stats();
+    }
+
+    fn sync_reusing_stats(&mut self) {
+        let global_reusing = REUSING_STATS.lock().unwrap();
+        self.reusing = global_reusing.clone();
     }
 
     fn iter_pq(&mut self, depot: &Arc<Depot>) {
@@ -150,6 +158,7 @@ impl fmt::Display for ChartStats {
     FOUND  |    PATH: {},     HANGS: {},   CRASHES: {}
 {}
 {}
+   REUSING | {}
 {}
 {}
 {}
@@ -172,6 +181,7 @@ impl fmt::Display for ChartStats {
             self.num_crashes,
             " -- FUZZ -- ".blue().bold(),
             self.fuzz,
+            self.reusing,
             " -- SEARCH -- ".blue().bold(),
             self.search,
             " -- STATE -- ".blue().bold(),

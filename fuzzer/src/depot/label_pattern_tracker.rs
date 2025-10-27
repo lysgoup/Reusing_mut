@@ -185,7 +185,7 @@ pub fn get_stats() -> (usize, usize) {
 
 pub fn print_stats() {
   let (num_patterns, num_records) = get_stats();
-  info!("[LabelPattern] Total patterns: {}, Total records: {}", num_patterns, num_records);
+  // info!("[LabelPattern] Total patterns: {}, Total records: {}", num_patterns, num_records);
 }
 
 fn check_continuous(offsets: &Vec<TagSeg>) -> bool {
