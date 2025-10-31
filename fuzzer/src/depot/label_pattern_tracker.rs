@@ -30,9 +30,6 @@ pub struct CondRecord {
 lazy_static! {
     pub static ref LABEL_PATTERN_MAP: Mutex<HashMap<LabelPattern, Vec<CondRecord>>> =
       Mutex::new(HashMap::new());
-
-    static ref ADDED_COND_IDS: Mutex<HashSet<(u32, u32, u32, LabelPattern, u8)>> =
-      Mutex::new(HashSet::new());
 }
 
 pub fn extract_pattern(offsets: &Vec<TagSeg>) -> LabelPattern {
@@ -141,21 +138,6 @@ fn create_single_record(
   cond: &CondStmt,
   operand_num: u8,
 ) {
-  let cond_id = (
-      cond.base.cmpid,
-      cond.base.order >> 16,
-      cond.base.condition,
-      pattern.clone(),
-      operand_num,
-  );
-
-  let mut added_ids = ADDED_COND_IDS.lock().unwrap();
-  if added_ids.contains(&cond_id) {
-      return;
-  }
-  added_ids.insert(cond_id);
-  drop(added_ids);
-
   let mut map = LABEL_PATTERN_MAP.lock().unwrap();
 
   // 중복 체크
