@@ -14,15 +14,15 @@ pub type LabelPattern = Vec<u32>;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CondRecord {
     pub cmpid: u32,
-    pub order: u32,
-    pub context: u32,
-    pub op: u32,
-    pub lb1: u32,
-    pub lb2: u32,
-    pub condition: u32,
-    pub belong: u32,
-    pub arg1: u64,
-    pub arg2: u64,
+    // pub order: u32,
+    // pub context: u32,
+    // pub op: u32,
+    // pub lb1: u32,
+    // pub lb2: u32,
+    // pub condition: u32,
+    // pub belong: u32,
+    // pub arg1: u64,
+    // pub arg2: u64,
     pub offsets: Vec<TagSeg>,
     pub critical_values: Vec<Vec<u8>>,
 }
@@ -151,15 +151,15 @@ fn create_single_record(
 
   let record = CondRecord {
       cmpid: cond.base.cmpid,
-      order: cond.base.order,
-      context: cond.base.context,
-      op: cond.base.op,
-      lb1: cond.base.lb1,
-      lb2: cond.base.lb2,
-      condition: cond.base.condition,
-      belong: cond.base.belong,
-      arg1: cond.base.arg1,
-      arg2: cond.base.arg2,
+      // order: cond.base.order,
+      // context: cond.base.context,
+      // op: cond.base.op,
+      // lb1: cond.base.lb1,
+      // lb2: cond.base.lb2,
+      // condition: cond.base.condition,
+      // belong: cond.base.belong,
+      // arg1: cond.base.arg1,
+      // arg2: cond.base.arg2,
       offsets: offsets.clone(),
       critical_values: critical_values.clone(),
   };
@@ -235,8 +235,7 @@ pub fn save_to_text(path: &Path) -> io::Result<()> {
       writeln!(file, "  Records: {}", records.len())?;
 
       for (i, record) in records.iter().enumerate() {
-        writeln!(file, "    [{}] cmpid={}, order={}, context={}, op={:#x}, lb1={}, lb2={}, condition={}, belong={}, arg1={}, arg2={}",
-         i, record.cmpid, record.order, record.context, record.op, record.lb1, record.lb2, record.condition, record.belong, record.arg1, record.arg2)?;
+        // writeln!(file, "    [{}] cmpid={}, order={}, context={}, op={:#x}, lb1={}, lb2={}, condition={}, belong={}, arg1={}, arg2={}", i, record.cmpid, record.order, record.context, record.op, record.lb1, record.lb2, record.condition, record.belong, record.arg1, record.arg2)?;
 
         writeln!(file, "        Offsets: {:?}", record.offsets)?;
         writeln!(file, "        Critical values: {:?}", record.critical_values)?;
@@ -246,4 +245,54 @@ pub fn save_to_text(path: &Path) -> io::Result<()> {
 
   info!("[LabelPattern] Saved to {:?}", path);
   Ok(())
+}
+
+lazy_static! {
+  pub static ref PATTERN_REUSING_INDEX: Mutex<HashMap<LabelPattern, usize>> =
+      Mutex::new(HashMap::new());
+}
+
+pub fn get_next_records(pattern: &LabelPattern, iterations: usize) -> Option<Vec<CondRecord>> {
+  let map = LABEL_PATTERN_MAP.lock().unwrap();
+  let records = map.get(pattern)?;
+
+  if records.is_empty() {
+      return None;
+  }
+
+  let total_records = records.len();
+  drop(map);
+
+  let mut index_map = PATTERN_REUSING_INDEX.lock().unwrap();
+  let current_index = index_map.entry(pattern.clone()).or_insert(0);
+
+  if *current_index >= total_records {
+      // info!("[Reusing] Pattern {:?}: All {} records exhausted, skipping", pattern, total_records);
+      return None;
+  }
+
+  let end_index = std::cmp::min(*current_index + iterations, total_records);
+
+  let map = LABEL_PATTERN_MAP.lock().unwrap();
+  let records = map.get(pattern)?;
+  let selected_records: Vec<CondRecord> = records[*current_index..end_index].to_vec();
+  drop(map);
+  let old_index = *current_index;
+    *current_index = end_index;
+
+    // info!("[Reusing] Pattern {:?}: Using records [{}..{}] out of {}", pattern, old_index, end_index, total_records);
+
+    Some(selected_records)
+}
+
+#[allow(dead_code)]
+pub fn reset_reusing_index(pattern: &LabelPattern) {
+    let mut index_map = PATTERN_REUSING_INDEX.lock().unwrap();
+    index_map.remove(pattern);
+}
+
+#[allow(dead_code)]
+pub fn reset_all_reusing_indices() {
+    let mut index_map = PATTERN_REUSING_INDEX.lock().unwrap();
+    index_map.clear();
 }

@@ -70,7 +70,7 @@ pub fn fuzz_loop(
             let mut handler = SearchHandler::new(running.clone(), &mut executor, &mut cond, buf);
             match fuzz_type {
                 FuzzType::ExploreFuzz => {
-                    let solved_by_reusing = apply_reusing_mutation(&mut handler, 100);
+                    let solved_by_reusing = apply_reusing_mutation(&mut handler, 50);
 
                     if solved_by_reusing {
                         info!("[FuzzLoop] Condition solved by reusing, skipping other mutations");
@@ -104,7 +104,7 @@ pub fn fuzz_loop(
                     }
                 },
                 FuzzType::ExploitFuzz => {
-                    let solved_by_reusing = apply_reusing_mutation(&mut handler, 100);
+                    let solved_by_reusing = apply_reusing_mutation(&mut handler, 50);
             
                     if !solved_by_reusing {
                         if handler.cond.state.is_one_byte() {

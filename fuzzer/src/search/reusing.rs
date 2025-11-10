@@ -1,10 +1,10 @@
-use crate::depot::{LABEL_PATTERN_MAP, extract_pattern_merged, CondRecord};
+use crate::depot::{LABEL_PATTERN_MAP, extract_pattern_merged, CondRecord, get_next_records};
 use crate::search::SearchHandler;
 use rand::seq::SliceRandom;
 use angora_common::tag::TagSeg;
 use crate::stats::REUSING_STATS;
 
-// Reusing mutation 수행 (100회 반복)
+// Reusing mutation
 pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) -> bool {
     // ✅ 1. local_stats 전체 백업
     let snapshot = handler.executor.local_stats.snapshot();
@@ -16,47 +16,36 @@ pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) ->
     let mut execution_count = 0;
     // ===== 1단계: 동일 패턴 시도 =====
     if !pattern.is_empty() {
-        let map = LABEL_PATTERN_MAP.lock().unwrap();
-        let records_opt = map.get(&pattern).map(|r| r.clone());
-        drop(map);
-
-        if let Some(records) = records_opt {
-            let available_count = records.len();
-            let actual_iterations = std::cmp::min(iterations, available_count);
-
-            // info!("[Reusing] Exact match: pattern={:?}, available={}, trying={}",pattern, available_count, actual_iterations);
-
-            let mut rng = rand::thread_rng();
-            let mut shuffled_records = records.clone();
-            shuffled_records.shuffle(&mut rng);
-            let selected_records = &shuffled_records[..actual_iterations];
-
-            for (i, record) in selected_records.iter().enumerate() {
-                if handler.is_stopped_or_skip() {
-                    warn!("[Reusing] Stopped early at iteration {}/{}", i, actual_iterations);
-                    break;
-                }
-
-                if insert_critical_value(handler, record) {
-                    let buf = handler.buf.clone();
-                    handler.execute(&buf);
-                    execution_count += 1;
-                }
-            }
-
-            // info!("[Reusing] Exact match complete: executed {} iterations", execution_count);
-        } else {
-            // info!("[Reusing] No exact match for pattern {:?}, will try combined segments", pattern);
-        }
-    }
+       if let Some(selected_records) = get_next_records(&pattern, iterations) {
+           let actual_iterations = selected_records.len();
+        //    info!("[Reusing] Exact match: pattern={:?}, trying {} records (sequential)", pattern, actual_iterations);
+   
+           for (i, record) in selected_records.iter().enumerate() {
+               if handler.is_stopped_or_skip() {
+                   warn!("[Reusing] Stopped early at iteration {}/{}", i, actual_iterations);
+                   break;
+               }
+   
+               if insert_critical_value(handler, record) {
+                   let buf = handler.buf.clone();
+                   handler.execute(&buf);
+                   execution_count += 1;
+               }
+           }
+   
+        //    info!("[Reusing] Exact match complete: executed {} iterations", execution_count);
+       } else {
+        //    info!("[Reusing] Pattern {:?}: All records exhausted or no records available", pattern);
+       }
+   }
 
     // ===== 2단계: 남은 횟수를 개별 세그먼트 조합으로 채우기 =====
     if execution_count < iterations {
         let remaining = iterations - execution_count;
-        // info!("[Reusing] Trying combined segments: {} iterations remaining", remaining);
+        info!("[Reusing] Trying combined segments: {} iterations remaining", remaining);
         let combined_count = try_combined_segments(handler, &pattern, remaining);
         execution_count += combined_count;
-        // info!("[Reusing] Combined complete: executed {} iterations", combined_count);
+        info!("[Reusing] Combined complete: executed {} iterations", combined_count);
     }
 
     // ✅ 6. reusing 종료 후, local_stats의 증가량을 REUSING_STATS로 복사

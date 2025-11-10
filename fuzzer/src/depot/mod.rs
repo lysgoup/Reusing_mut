@@ -14,5 +14,7 @@ pub use self::label_pattern_tracker::{
   LABEL_PATTERN_MAP,
   extract_pattern_merged,
   CondRecord,
+  get_next_records,
+  PATTERN_REUSING_INDEX,
 };
 use self::{depot_dir::DepotDir, qpriority::QPriority};
