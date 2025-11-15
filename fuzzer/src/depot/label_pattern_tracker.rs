@@ -247,12 +247,11 @@ pub fn save_to_text(path: &Path) -> io::Result<()> {
   Ok(())
 }
 
-lazy_static! {
-  pub static ref PATTERN_REUSING_INDEX: Mutex<HashMap<LabelPattern, usize>> =
-      Mutex::new(HashMap::new());
-}
-
-pub fn get_next_records(pattern: &LabelPattern, iterations: usize) -> Option<Vec<CondRecord>> {
+pub fn get_next_records(
+  cond: &mut CondStmt,
+  pattern: &LabelPattern,
+  iterations: usize
+) -> Option<Vec<CondRecord>> {
   let map = LABEL_PATTERN_MAP.lock().unwrap();
   let records = map.get(pattern)?;
 
@@ -261,38 +260,22 @@ pub fn get_next_records(pattern: &LabelPattern, iterations: usize) -> Option<Vec
   }
 
   let total_records = records.len();
-  drop(map);
+  let current_index = cond.reusing_record_index;
 
-  let mut index_map = PATTERN_REUSING_INDEX.lock().unwrap();
-  let current_index = index_map.entry(pattern.clone()).or_insert(0);
-
-  if *current_index >= total_records {
-      // info!("[Reusing] Pattern {:?}: All {} records exhausted, skipping", pattern, total_records);
+  if current_index >= total_records {
+      drop(map);
+      //  info!("[Reusing] Pattern {:?}: All {} records exhausted, skipping", pattern, total_records);
       return None;
   }
 
-  let end_index = std::cmp::min(*current_index + iterations, total_records);
-
-  let map = LABEL_PATTERN_MAP.lock().unwrap();
-  let records = map.get(pattern)?;
-  let selected_records: Vec<CondRecord> = records[*current_index..end_index].to_vec();
+  let end_index = std::cmp::min(current_index + iterations, total_records);
+  let selected_records: Vec<CondRecord> = records[current_index..end_index].to_vec();
   drop(map);
-  let old_index = *current_index;
-    *current_index = end_index;
 
-    // info!("[Reusing] Pattern {:?}: Using records [{}..{}] out of {}", pattern, old_index, end_index, total_records);
+  let old_index = current_index;
+  cond.reusing_record_index = end_index;
 
-    Some(selected_records)
-}
+  //  info!("[Reusing] Pattern {:?}: Using records [{}..{}] out of {}", pattern, old_index, end_index, total_records);
 
-#[allow(dead_code)]
-pub fn reset_reusing_index(pattern: &LabelPattern) {
-    let mut index_map = PATTERN_REUSING_INDEX.lock().unwrap();
-    index_map.remove(pattern);
-}
-
-#[allow(dead_code)]
-pub fn reset_all_reusing_indices() {
-    let mut index_map = PATTERN_REUSING_INDEX.lock().unwrap();
-    index_map.clear();
+  Some(selected_records)
 }

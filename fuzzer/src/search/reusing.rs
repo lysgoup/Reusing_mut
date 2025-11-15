@@ -6,49 +6,64 @@ use crate::stats::REUSING_STATS;
 
 // Reusing mutation
 pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) -> bool {
-    // ✅ 1. local_stats 전체 백업
+    // 1. local_stats 전체 백업
     let snapshot = handler.executor.local_stats.snapshot();
     let buf_backup = handler.buf.clone();
 
     // 2. pattern 추출
     let pattern = extract_pattern_merged(&handler.cond.offsets);
-
-    let mut execution_count = 0;
-    // ===== 1단계: 동일 패턴 시도 =====
-    if !pattern.is_empty() {
-       if let Some(selected_records) = get_next_records(&pattern, iterations) {
-           let actual_iterations = selected_records.len();
-        //    info!("[Reusing] Exact match: pattern={:?}, trying {} records (sequential)", pattern, actual_iterations);
-   
-           for (i, record) in selected_records.iter().enumerate() {
-               if handler.is_stopped_or_skip() {
-                   warn!("[Reusing] Stopped early at iteration {}/{}", i, actual_iterations);
-                   break;
-               }
-   
-               if insert_critical_value(handler, record) {
-                   let buf = handler.buf.clone();
-                   handler.execute(&buf);
-                   execution_count += 1;
-               }
-           }
-   
-        //    info!("[Reusing] Exact match complete: executed {} iterations", execution_count);
-       } else {
-        //    info!("[Reusing] Pattern {:?}: All records exhausted or no records available", pattern);
-       }
-   }
-
-    // ===== 2단계: 남은 횟수를 개별 세그먼트 조합으로 채우기 =====
-    if execution_count < iterations {
-        let remaining = iterations - execution_count;
-        info!("[Reusing] Trying combined segments: {} iterations remaining", remaining);
-        let combined_count = try_combined_segments(handler, &pattern, remaining);
-        execution_count += combined_count;
-        info!("[Reusing] Combined complete: executed {} iterations", combined_count);
+    if pattern.is_empty(){
+        return false;
     }
 
-    // ✅ 6. reusing 종료 후, local_stats의 증가량을 REUSING_STATS로 복사
+    // 3. reusing 진행
+    let mut execution_count = 0;
+    let map = LABEL_PATTERN_MAP.lock().unwrap();
+    let total_records = if let Some(records) = map.get(&pattern) {
+        records.len()
+    } else {
+        0
+    };
+    drop(map);
+
+    if handler.cond.reusing_record_index >= total_records {
+        info!("[Reusing] Pattern {:?}: All records already used (index={}/{}), skipping original reusing",
+              pattern, handler.cond.reusing_record_index, total_records);
+    } else {
+        // ===== 1단계: 동일 패턴 시도 =====
+        if let Some(selected_records) = get_next_records(&mut handler.cond, &pattern, iterations) {
+            let actual_iterations = selected_records.len();
+            //    info!("[Reusing] Exact match: pattern={:?}, trying {} records (sequential)", pattern, actual_iterations);
+    
+            for (i, record) in selected_records.iter().enumerate() {
+                if handler.is_stopped_or_skip() {
+                    warn!("[Reusing] Stopped early at iteration {}/{}", i, actual_iterations);
+                    break;
+                }
+    
+                if insert_critical_value(handler, record) {
+                    let buf = handler.buf.clone();
+                    handler.execute(&buf);
+                    execution_count += 1;
+                }
+            }
+    
+        //    info!("[Reusing] Exact match complete: executed {} iterations", execution_count);
+        } else {
+        //    info!("[Reusing] Pattern {:?}: All records exhausted or no records available", pattern);
+        }
+    }
+
+    // ===== 2단계: 남은 횟수를 개별 세그먼트 조합으로 채우기 =====
+    if execution_count < iterations && pattern.len() >= 2 {
+        let remaining = iterations - execution_count;
+         info!("[Reusing] Trying combined segments: {} iterations remaining", remaining);
+        let combined_count = try_combined_segments(handler, &pattern, remaining);
+        execution_count += combined_count;
+         info!("[Reusing] Combined complete: executed {} iterations", combined_count);
+    }
+
+    // 4. reusing 종료 후, local_stats의 증가량을 REUSING_STATS로 복사
     {
         let mut reusing_stats = REUSING_STATS.lock().unwrap();
 
@@ -58,7 +73,7 @@ pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) ->
         let hangs_delta = handler.executor.local_stats.num_hangs.0 - snapshot.num_hangs.0;
         let crashes_delta = handler.executor.local_stats.num_crashes.0 - snapshot.num_crashes.0;
 
-        // ✅ reusing 종료 시 증가량 로그
+        // reusing 종료 시 증가량 로그
         // info!("[Reusing] Delta before save: exec={}, inputs={} (new paths), hangs={}, crashes={}",
         // exec_delta, inputs_delta, hangs_delta, crashes_delta);
 
@@ -74,22 +89,21 @@ pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) ->
         //       reusing_stats.num_exec.0, reusing_stats.num_inputs.0);
     }
 
-    // ✅ 7. local_stats를 백업으로 복원 (다음 mutation에서 reusing이 카운트 안 되도록)
+    // 5. local_stats를 백업으로 복원 (다음 mutation에서 reusing이 카운트 안 되도록)
     handler.executor.local_stats.restore(&snapshot);
     handler.buf = buf_backup;
 
-    // ✅ 복원 후 로그
+    // 복원 후 로그
     // info!("[Reusing] Restored local_stats: exec={}, inputs={}, hangs={}, crashes={}",
     // handler.executor.local_stats.num_exec.0,
     // handler.executor.local_stats.num_inputs.0,
     // handler.executor.local_stats.num_hangs.0,
     // handler.executor.local_stats.num_crashes.0);
 
-     // ✅ 조건문이 해결되었는지 확인
+     // 6. 조건문이 해결되었는지 확인
      if handler.cond.is_done() {
         // info!("[Reusing] SUCCESS! Solved cmpid={}",handler.cond.base.cmpid);
-
-        return true;  // ✅ 성공!
+        return true;
     }
     return false;
 }
