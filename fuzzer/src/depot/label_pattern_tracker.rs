@@ -9,20 +9,21 @@ use std::path::Path;
 use serde_derive::{Serialize, Deserialize};
 use super::depot::Depot;
 
+
 pub type LabelPattern = Vec<u32>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CondRecord {
     pub cmpid: u32,
-    // pub order: u32,
-    // pub context: u32,
-    // pub op: u32,
-    // pub lb1: u32,
-    // pub lb2: u32,
-    // pub condition: u32,
-    // pub belong: u32,
-    // pub arg1: u64,
-    // pub arg2: u64,
+    pub order: u32,
+    pub context: u32,
+    pub op: u32,
+    pub lb1: u32,
+    pub lb2: u32,
+    pub condition: u32,
+    pub belong: u32,
+    pub arg1: u64,
+    pub arg2: u64,
     pub offsets: Vec<TagSeg>,
     pub critical_values: Vec<Vec<u8>>,
 }
@@ -151,15 +152,15 @@ fn create_single_record(
 
   let record = CondRecord {
       cmpid: cond.base.cmpid,
-      // order: cond.base.order,
-      // context: cond.base.context,
-      // op: cond.base.op,
-      // lb1: cond.base.lb1,
-      // lb2: cond.base.lb2,
-      // condition: cond.base.condition,
-      // belong: cond.base.belong,
-      // arg1: cond.base.arg1,
-      // arg2: cond.base.arg2,
+      order: cond.base.order,
+      context: cond.base.context,
+      op: cond.base.op,
+      lb1: cond.base.lb1,
+      lb2: cond.base.lb2,
+      condition: cond.base.condition,
+      belong: cond.base.belong,
+      arg1: cond.base.arg1,
+      arg2: cond.base.arg2,
       offsets: offsets.clone(),
       critical_values: critical_values.clone(),
   };

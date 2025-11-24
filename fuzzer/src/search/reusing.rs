@@ -3,9 +3,16 @@ use crate::search::SearchHandler;
 use rand::seq::SliceRandom;
 use angora_common::tag::TagSeg;
 use crate::stats::REUSING_STATS;
+use std::fs::OpenOptions;
+use std::io::Write;
 
 // Reusing mutation
 pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) -> bool {
+    // 이미 해결된 조건이면 스킵
+    if handler.cond.is_done() {
+        return false;
+    }
+
     // 1. local_stats 전체 백업
     let snapshot = handler.executor.local_stats.snapshot();
     let buf_backup = handler.buf.clone();
@@ -27,8 +34,7 @@ pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) ->
     drop(map);
 
     if handler.cond.reusing_record_index >= total_records {
-        info!("[Reusing] Pattern {:?}: All records already used (index={}/{}), skipping original reusing",
-              pattern, handler.cond.reusing_record_index, total_records);
+        // info!("[Reusing] Pattern {:?}: All records already used (index={}/{}), skipping original reusing", pattern, handler.cond.reusing_record_index, total_records);
     } else {
         // ===== 1단계: 동일 패턴 시도 =====
         if let Some(selected_records) = get_next_records(&mut handler.cond, &pattern, iterations) {
@@ -43,8 +49,57 @@ pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) ->
     
                 if insert_critical_value(handler, record) {
                     let buf = handler.buf.clone();
+                    let inputs_before = handler.executor.local_stats.num_inputs.0;
                     handler.execute(&buf);
+                    let inputs_after = handler.executor.local_stats.num_inputs.0;
                     execution_count += 1;
+            
+                    // 새로운 coverage가 없으면 로깅
+                    let merged_offsets = merge_continuous_segments(&handler.cond.offsets);
+                    // 원래 값 추출
+                    let mut original_values: Vec<Vec<u8>> = Vec::new();
+                    for seg in &merged_offsets {
+                        let begin = seg.begin as usize;
+                        let end = seg.end as usize;
+                        if end <= buf_backup.len() {
+                            original_values.push(buf_backup[begin..end].to_vec());
+                        }
+                    }
+                    
+                    if inputs_after == inputs_before {
+                        if let Ok(mut file) = OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open("fail_log.txt")
+                        {
+                            let _ = writeln!(file, "=== Original Reusing: No New Coverage ===");
+                            let _ = writeln!(file, "Handler cmpid: {}", handler.cond.base.cmpid);
+                            let _ = writeln!(file, "Merged offsets: {:?}", merged_offsets);
+                            let _ = writeln!(file, "Original values: {:?}", original_values);
+                            let _ = writeln!(file, "Pattern: {:?}", pattern);
+                            let _ = writeln!(file, "Record cmpid: {}", record.cmpid);
+                            let _ = writeln!(file, "Record offsets: {:?}", record.offsets);
+                            let _ = writeln!(file, "Record critical_values: {:?}", record.critical_values);
+                            let _ = writeln!(file, "");
+                        }
+                    }
+                    else{
+                        if let Ok(mut file) = OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open("success_log.txt")
+                        {
+                            let _ = writeln!(file, "=== Original Reusing: New Coverage Found ===");
+                            let _ = writeln!(file, "Handler cmpid: {}", handler.cond.base.cmpid);
+                            let _ = writeln!(file, "Merged offsets: {:?}", merged_offsets);
+                            let _ = writeln!(file, "Original values: {:?}", original_values);
+                            let _ = writeln!(file, "Pattern: {:?}", pattern);
+                            let _ = writeln!(file, "Record cmpid: {}", record.cmpid);
+                            let _ = writeln!(file, "Record offsets: {:?}", record.offsets);
+                            let _ = writeln!(file, "Record critical_values: {:?}", record.critical_values);
+                            let _ = writeln!(file, "");
+                        }
+                    }
                 }
             }
     
