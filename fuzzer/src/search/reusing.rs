@@ -6,6 +6,11 @@ use crate::stats::REUSING_STATS;
 
 // Reusing mutation
 pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) -> bool {
+    // 0. 이미 해결된 조건이면 스킵
+    if handler.cond.is_done() {
+        return false;
+    }
+
     // 1. local_stats 전체 백업
     let snapshot = handler.executor.local_stats.snapshot();
     let buf_backup = handler.buf.clone();
@@ -32,16 +37,18 @@ pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) ->
     } else {
         // ===== 1단계: 동일 패턴 시도 =====
         if let Some(selected_records) = get_next_records(&mut handler.cond, &pattern, iterations) {
-            let actual_iterations = selected_records.len();
+            // let actual_iterations = selected_records.len();
             //    info!("[Reusing] Exact match: pattern={:?}, trying {} records (sequential)", pattern, actual_iterations);
-    
+            
+            let merged_offsets = merge_continuous_segments(&handler.cond.offsets);
+
             for (i, record) in selected_records.iter().enumerate() {
                 if handler.is_stopped_or_skip() {
-                    warn!("[Reusing] Stopped early at iteration {}/{}", i, actual_iterations);
+                    // warn!("[Reusing] Stopped early at iteration {}/{}", i, actual_iterations);
                     break;
                 }
     
-                if insert_critical_value(handler, record) {
+                if insert_critical_value_with_merged(handler, record, &merged_offsets) {
                     let buf = handler.buf.clone();
                     handler.execute(&buf);
                     execution_count += 1;
@@ -57,10 +64,10 @@ pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) ->
     // ===== 2단계: 남은 횟수를 개별 세그먼트 조합으로 채우기 =====
     if execution_count < iterations && pattern.len() >= 2 {
         let remaining = iterations - execution_count;
-         info!("[Reusing] Trying combined segments: {} iterations remaining", remaining);
+        //  info!("[Reusing] Trying combined segments: {} iterations remaining", remaining);
         let combined_count = try_combined_segments(handler, &pattern, remaining);
         execution_count += combined_count;
-         info!("[Reusing] Combined complete: executed {} iterations", combined_count);
+        //  info!("[Reusing] Combined complete: executed {} iterations", combined_count);
     }
 
     // 4. reusing 종료 후, local_stats의 증가량을 REUSING_STATS로 복사
@@ -164,11 +171,10 @@ fn try_combined_segments(handler: &mut SearchHandler, pattern: &Vec<u32>, iterat
             }
         }
     }
-
-    execution_count  // ✅ 실행 횟수 반환
+    execution_count
 }
 
-fn insert_combined_values(handler: &mut SearchHandler, values: &Vec<Vec<u8>>) -> bool {  // ✅ bool 반환
+fn insert_combined_values(handler: &mut SearchHandler, values: &Vec<Vec<u8>>) -> bool {
     let merged_offsets = merge_continuous_segments(&handler.cond.offsets);
 
     if merged_offsets.len() != values.len() {
@@ -194,36 +200,32 @@ fn insert_combined_values(handler: &mut SearchHandler, values: &Vec<Vec<u8>>) ->
         handler.buf[begin..begin + copy_len]
             .copy_from_slice(&value[..copy_len]);
     }
-
-    true  // ✅ 성공 시 true 반환
+    true
 }
 
-fn insert_critical_value(handler: &mut SearchHandler, record: &CondRecord) -> bool {
-    let offsets = &handler.cond.offsets;
+fn insert_critical_value_with_merged(
+    handler: &mut SearchHandler,
+    record: &CondRecord,
+    merged_offsets: &[TagSeg],
+) -> bool {
     let critical_values = &record.critical_values;
 
-    let merged_offsets = merge_continuous_segments(offsets);
-
     if merged_offsets.len() != critical_values.len() {
-        debug!("[Reusing] Offset mismatch: expected {} segments, got {} values (from cmpid={})",
-               merged_offsets.len(), critical_values.len(), record.cmpid);
         return false;
     }
 
-    for (i, seg) in merged_offsets.iter().enumerate() {
+    // 필요한 최대 크기를 한 번에 계산
+    let max_end = merged_offsets.iter().map(|s| s.end as usize).max().unwrap_or(0);
+    if max_end > handler.buf.len() {
+        handler.buf.resize(max_end, 0);
+    }
+
+    for (seg, value) in merged_offsets.iter().zip(critical_values.iter()) {
         let begin = seg.begin as usize;
         let end = seg.end as usize;
-        let value = &critical_values[i];
+        let copy_len = value.len().min(end - begin);
 
-        if end > handler.buf.len() {
-            handler.buf.resize(end, 0);
-        }
-
-        let copy_len = std::cmp::min(value.len(), end - begin);
-        handler.buf[begin..begin + copy_len]
-            .copy_from_slice(&value[..copy_len]);
-
-        debug!("[Reusing] Inserted value at offset {}..{}: {:?} (from cmpid={})", begin, begin + copy_len, &value[..copy_len], record.cmpid);
+        handler.buf[begin..begin + copy_len].copy_from_slice(&value[..copy_len]);
     }
 
     true

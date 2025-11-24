@@ -252,30 +252,22 @@ pub fn get_next_records(
   pattern: &LabelPattern,
   iterations: usize
 ) -> Option<Vec<CondRecord>> {
-  let map = LABEL_PATTERN_MAP.lock().unwrap();
-  let records = map.get(pattern)?;
+  let selected = {
+    let map = LABEL_PATTERN_MAP.lock().unwrap();
+    let records = map.get(pattern)?;
 
-  if records.is_empty() {
-      return None;
-  }
+    let total = records.len();
+    let start = cond.reusing_record_index;
 
-  let total_records = records.len();
-  let current_index = cond.reusing_record_index;
+    if start >= total {
+        return None;
+    }
 
-  if current_index >= total_records {
-      drop(map);
-      //  info!("[Reusing] Pattern {:?}: All {} records exhausted, skipping", pattern, total_records);
-      return None;
-  }
+    let end = (start + iterations).min(total);
+    cond.reusing_record_index = end;
 
-  let end_index = std::cmp::min(current_index + iterations, total_records);
-  let selected_records: Vec<CondRecord> = records[current_index..end_index].to_vec();
-  drop(map);
+    records[start..end].to_vec()
+  };
 
-  let old_index = current_index;
-  cond.reusing_record_index = end_index;
-
-  //  info!("[Reusing] Pattern {:?}: Using records [{}..{}] out of {}", pattern, old_index, end_index, total_records);
-
-  Some(selected_records)
+  Some(selected)
 }
