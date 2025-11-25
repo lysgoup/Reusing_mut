@@ -70,7 +70,7 @@ pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) ->
                         if let Ok(mut file) = OpenOptions::new()
                             .create(true)
                             .append(true)
-                            .open("fail_log.txt")
+                            .open("original_fail_log.txt")
                         {
                             let _ = writeln!(file, "=== Original Reusing: No New Coverage ===");
                             let _ = writeln!(file, "Handler cmpid: {}", handler.cond.base.cmpid);
@@ -87,7 +87,7 @@ pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) ->
                         if let Ok(mut file) = OpenOptions::new()
                             .create(true)
                             .append(true)
-                            .open("success_log.txt")
+                            .open("original_success_log.txt")
                         {
                             let _ = writeln!(file, "=== Original Reusing: New Coverage Found ===");
                             let _ = writeln!(file, "Handler cmpid: {}", handler.cond.base.cmpid);
@@ -112,10 +112,10 @@ pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) ->
     // ===== 2단계: 남은 횟수를 개별 세그먼트 조합으로 채우기 =====
     if execution_count < iterations && pattern.len() >= 2 {
         let remaining = iterations - execution_count;
-         info!("[Reusing] Trying combined segments: {} iterations remaining", remaining);
-        let combined_count = try_combined_segments(handler, &pattern, remaining);
+        // info!("[Reusing] Trying combined segments: {} iterations remaining", remaining);
+        let combined_count = try_combined_segments(handler, &pattern, remaining, &buf_backup);
         execution_count += combined_count;
-         info!("[Reusing] Combined complete: executed {} iterations", combined_count);
+        //  info!("[Reusing] Combined complete: executed {} iterations", combined_count);
     }
 
     // 4. reusing 종료 후, local_stats의 증가량을 REUSING_STATS로 복사
@@ -163,7 +163,7 @@ pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) ->
     return false;
 }
 
-fn try_combined_segments(handler: &mut SearchHandler, pattern: &Vec<u32>, iterations: usize) -> usize {
+fn try_combined_segments(handler: &mut SearchHandler, pattern: &Vec<u32>, iterations: usize, buf_backup: &Vec<u8>) -> usize {
     let map = LABEL_PATTERN_MAP.lock().unwrap();
 
     // 각 세그먼트별로 개별 패턴 레코드 수집
@@ -201,11 +201,13 @@ fn try_combined_segments(handler: &mut SearchHandler, pattern: &Vec<u32>, iterat
 
         // 각 세그먼트별로 랜덤 선택
         let mut combined_values: Vec<Vec<u8>> = Vec::new();
+        let mut selected_records: Vec<&CondRecord> = Vec::new();
 
         for pool in &segment_pools {
             if let Some(record) = pool.choose(&mut rng) {
                 if !record.critical_values.is_empty() {
                     combined_values.push(record.critical_values[0].clone());
+                    selected_records.push(record);
                 }
             }
         }
@@ -214,8 +216,67 @@ fn try_combined_segments(handler: &mut SearchHandler, pattern: &Vec<u32>, iterat
         if combined_values.len() == pattern.len() {
             if insert_combined_values(handler, &combined_values) {
                 let buf = handler.buf.clone();
+                let inputs_before = handler.executor.local_stats.num_inputs.0;
                 handler.execute(&buf);
+                let inputs_after = handler.executor.local_stats.num_inputs.0;
                 execution_count += 1;
+                // ✅ 로깅 추가 (original reusing과 동일한 로직)
+                let merged_offsets = merge_continuous_segments(&handler.cond.offsets);
+
+                // 원래 값 추출
+                let mut original_values: Vec<Vec<u8>> = Vec::new();
+                for seg in &merged_offsets {
+                    let begin = seg.begin as usize;
+                    let end = seg.end as usize;
+                    if end <= buf_backup.len() {
+                        original_values.push(buf_backup[begin..end].to_vec());
+                    }
+                }
+                
+                if inputs_after == inputs_before {
+                    // 실패 로그
+                    if let Ok(mut file) = OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open("combined_fail_log.txt")
+                    {
+                        let _ = writeln!(file, "=== Combined Reusing: No New Coverage ===");
+                        let _ = writeln!(file, "Handler cmpid: {}", handler.cond.base.cmpid);
+                        let _ = writeln!(file, "Merged offsets: {:?}", merged_offsets);
+                        let _ = writeln!(file, "Original values: {:?}", original_values);
+                        let _ = writeln!(file, "Pattern: {:?}", pattern);
+
+                        // 각 세그먼트별 선택된 레코드 정보
+                        for (idx, record) in selected_records.iter().enumerate() {
+                            let _ = writeln!(file, "Segment[{}] - Record cmpid: {}", idx, record.cmpid);
+                            let _ = writeln!(file, "Segment[{}] - Record offsets: {:?}", idx, record.offsets);
+                            let _ = writeln!(file, "Segment[{}] - Record critical_values: {:?}", idx, record.critical_values);
+                        }
+                        let _ = writeln!(file, "Combined values: {:?}", combined_values);
+                        let _ = writeln!(file, "");
+                    }
+                } else {
+                    // 성공 로그
+                    if let Ok(mut file) = OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open("combined_success_log.txt")
+                    {
+                        let _ = writeln!(file, "=== Combined Reusing: New Coverage Found ===");
+                        let _ = writeln!(file, "Handler cmpid: {}", handler.cond.base.cmpid);
+                        let _ = writeln!(file, "Merged offsets: {:?}", merged_offsets);
+                        let _ = writeln!(file, "Original values: {:?}", original_values);
+                        let _ = writeln!(file, "Pattern: {:?}", pattern);
+
+                        for (idx, record) in selected_records.iter().enumerate() {
+                            let _ = writeln!(file, "Segment[{}] - Record cmpid: {}", idx, record.cmpid);
+                            let _ = writeln!(file, "Segment[{}] - Record offsets: {:?}", idx, record.offsets);
+                            let _ = writeln!(file, "Segment[{}] - Record critical_values: {:?}", idx, record.critical_values);
+                        }
+                        let _ = writeln!(file, "Combined values: {:?}", combined_values);
+                        let _ = writeln!(file, "");
+                    }
+                }
             }
         }
     }
