@@ -116,23 +116,21 @@ pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) ->
 }
 
 fn try_combined_segments(handler: &mut SearchHandler, pattern: &Vec<u32>, iterations: usize) -> usize {
-    let map = LABEL_PATTERN_MAP.lock().unwrap();
-
     // 각 세그먼트별로 개별 패턴 레코드 수집
-    let mut segment_pools: Vec<Vec<CondRecord>> = Vec::new();
+    let segment_pools: Vec<Vec<Vec<u8>>> = {
+        let map = LABEL_PATTERN_MAP.lock().unwrap();
 
-    for (idx, &segment_size) in pattern.iter().enumerate() {
-        let single_pattern = vec![segment_size];
-        if let Some(records) = map.get(&single_pattern) {
-            segment_pools.push(records.clone());
-            // info!("[Reusing] Segment[{}] size={}: {} records available",idx, segment_size, records.len());
-        } else {
-            segment_pools.push(vec![]);
-            warn!("[Reusing] Segment[{}] size={}: NO records available", idx, segment_size);
-        }
-    }
-
-    drop(map);
+        pattern.iter().map(|&segment_size| {
+            let single_pattern = vec![segment_size];
+            map.get(&single_pattern)
+                .map(|records| {
+                    records.iter()
+                        .filter_map(|r| r.critical_values.first().cloned())
+                        .collect()
+                })
+                .unwrap_or_default()
+        }).collect()
+    };
 
     // 모든 세그먼트에 후보가 있는지 확인
     if segment_pools.iter().any(|pool| pool.is_empty()) {
@@ -141,9 +139,30 @@ fn try_combined_segments(handler: &mut SearchHandler, pattern: &Vec<u32>, iterat
     }
 
     // info!("[Reusing] All segment pools available, starting combined mutations");
+    // ✅ 병합 오프셋을 루프 밖에서 1회만 계산
+    let merged_offsets = merge_continuous_segments(&handler.cond.offsets);
+
+    if merged_offsets.len() != pattern.len() {
+        warn!("[Reusing] Merged offsets mismatch: offsets={}, pattern={}",
+              merged_offsets.len(), pattern.len());
+        return 0;
+    }
+
+    // ✅ 최대 버퍼 크기 미리 계산 및 할당
+    let max_end = merged_offsets.iter()
+        .map(|s| s.end as usize)
+        .max()
+        .unwrap_or(0);
+
+    if max_end > handler.buf.len() {
+        handler.buf.resize(max_end, 0);
+    }
 
     let mut rng = rand::thread_rng();
     let mut execution_count = 0;
+
+    // ✅ Vec 재사용 (매번 할당 X)
+    let mut combined_values: Vec<Vec<u8>> = Vec::with_capacity(pattern.len());
 
     for iter in 0..iterations {
         if handler.is_stopped_or_skip() {
@@ -151,56 +170,35 @@ fn try_combined_segments(handler: &mut SearchHandler, pattern: &Vec<u32>, iterat
             break;
         }
 
-        // 각 세그먼트별로 랜덤 선택
-        let mut combined_values: Vec<Vec<u8>> = Vec::new();
+        combined_values.clear();
 
+        // 각 세그먼트별로 랜덤 선택
         for pool in &segment_pools {
             if let Some(record) = pool.choose(&mut rng) {
-                if !record.critical_values.is_empty() {
-                    combined_values.push(record.critical_values[0].clone());
-                }
+                combined_values.push(record.clone());
             }
         }
 
+
+
         // 조합된 값으로 mutation
-        if combined_values.len() == pattern.len() {
-            if insert_combined_values(handler, &combined_values) {
-                let buf = handler.buf.clone();
-                handler.execute(&buf);
-                execution_count += 1;
+        if combined_values.len() == merged_offsets.len() {
+            // 값 삽입
+            for (seg, value) in merged_offsets.iter().zip(combined_values.iter()) {
+                let begin = seg.begin as usize;
+                let end = seg.end as usize;
+                let copy_len = value.len().min(end - begin);
+
+                handler.buf[begin..begin + copy_len]
+                    .copy_from_slice(&value[..copy_len]);
             }
+
+            let buf = handler.buf.clone();
+            handler.execute(&buf);
+            execution_count += 1;
         }
     }
     execution_count
-}
-
-fn insert_combined_values(handler: &mut SearchHandler, values: &Vec<Vec<u8>>) -> bool {
-    let merged_offsets = merge_continuous_segments(&handler.cond.offsets);
-
-    if merged_offsets.len() != values.len() {
-        warn!("[Reusing] Combined values size mismatch: offsets={}, values={}",
-              merged_offsets.len(), values.len());
-        return false;
-    }
-
-    for (i, seg) in merged_offsets.iter().enumerate() {
-        if i >= values.len() {
-            break;
-        }
-
-        let begin = seg.begin as usize;
-        let end = seg.end as usize;
-        let value = &values[i];
-
-        if end > handler.buf.len() {
-            handler.buf.resize(end, 0);
-        }
-
-        let copy_len = std::cmp::min(value.len(), end - begin);
-        handler.buf[begin..begin + copy_len]
-            .copy_from_slice(&value[..copy_len]);
-    }
-    true
 }
 
 fn insert_critical_value_with_merged(
