@@ -129,6 +129,18 @@ pub fn fuzz_main(
 
     info!("Pattern map saved successfully!");
 
+    // cmpid_log.txt를 output dir로 복사
+    let cmpid_log_source = PathBuf::from("cmpid_log.txt");
+    if cmpid_log_source.exists() {
+        let cmpid_log_dest = angora_out_dir.join("cmpid_log.txt");
+        match fs::copy(&cmpid_log_source, &cmpid_log_dest) {
+            Ok(_) => info!("cmpid_log.txt copied to output directory successfully!"),
+            Err(e) => warn!("Failed to copy cmpid_log.txt: {:?}", e),
+        }
+    } else {
+        warn!("cmpid_log.txt not found in current directory");
+    }
+
     match fs::remove_file(&fuzzer_stats) {
         Ok(_) => (),
         Err(e) => warn!("Could not remove fuzzer stats file: {:?}", e),
