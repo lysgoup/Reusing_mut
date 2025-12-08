@@ -134,6 +134,7 @@ impl Depot {
                         // If existed one and our new one has two different conditions,
                         // this indicate that it is explored.
                         if v.0.base.condition != cond.base.condition {
+                            label_pattern_tracker::add_cond_to_pattern_map(&cond, self);
                             v.0.mark_as_done();
                             q.change_priority(&cond, QPriority::done());
                         } else {
