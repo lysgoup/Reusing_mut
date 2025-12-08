@@ -857,7 +857,7 @@ bool AngoraLLVMPass::runOnModule(Module &M) {
   initVariables(M);
 
   // ✨ 추가: cmpid_log.txt 파일 열기
-  cmpid_log_file.open("/angora/cmpid_log.txt", std::ios::out | std::ios::app);
+  cmpid_log_file.open("cmpid_log.txt", std::ios::out | std::ios::app);
   if (cmpid_log_file.is_open()) {
     cmpid_log_file << "# Module: " << ModName << " (ModId: " << ModId << ")\n";
     cmpid_log_file << "# Format: cmpid: filename, line, column\n";
