@@ -3,6 +3,7 @@ use crate::{cond_stmt::CondStmt, executor::StatusType};
 use crate::depot::label_pattern_tracker;
 use rand;
 use std::{
+    collections::HashSet,
     fs,
     io::prelude::*,
     mem,
@@ -165,6 +166,63 @@ impl Depot {
                     ));
                     let priority = QPriority::init(cond.base.op);
                     label_pattern_tracker::add_cond_to_pattern_map(&cond, self);
+                    q.push(cond, priority);
+
+                }
+            }
+        }
+        label_pattern_tracker::print_stats();
+        new_branches
+    }
+
+    pub fn add_entries_with_filter(&self, conds: Vec<CondStmt>, mutated_offsets: &HashSet<u32>) -> Vec<(u32, u32, u32, u32)> {
+        let mut new_branches = Vec::new();
+        let mut q = match self.queue.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                warn!("Mutex poisoned! Results may be incorrect. Continuing...");
+                poisoned.into_inner()
+            },
+        };
+
+        for mut cond in conds {
+            if cond.is_desirable {
+                if let Some(v) = q.get_mut(&cond) {
+                    if !v.0.is_done() {
+                        // If existed one and our new one has two different conditions,
+                        // this indicate that it is explored.
+                        if v.0.base.condition != cond.base.condition {
+                            // 새로운 branch 발견! (반대편 branch 커버)
+                            new_branches.push((
+                                cond.base.cmpid,
+                                cond.base.context,
+                                cond.base.order,
+                                cond.base.condition
+                            ));
+                            label_pattern_tracker::add_cond_to_pattern_map_with_filter(&cond, self, mutated_offsets);
+                            v.0.mark_as_done();
+                            q.change_priority(&cond, QPriority::done());
+                        } else {
+                            // Existed, but the new one are better
+                            // If the cond is faster than the older one, we prefer the faster,
+                            if config::PREFER_FAST_COND && v.0.speed > cond.speed {
+                                mem::swap(v.0, &mut cond);
+                                let priority = QPriority::init(cond.base.op);
+                                q.change_priority(&cond, priority);
+                            }
+                        }
+                    }
+                } else {
+                    // 완전히 새로운 조건문 또는 이미 done인 조건문의 새 인스턴스
+                    // 완전히 새로운 branch 발견!
+                    new_branches.push((
+                        cond.base.cmpid,
+                        cond.base.context,
+                        cond.base.order,
+                        cond.base.condition
+                    ));
+                    let priority = QPriority::init(cond.base.op);
+                    label_pattern_tracker::add_cond_to_pattern_map_with_filter(&cond, self, mutated_offsets);
                     q.push(cond, priority);
 
                 }

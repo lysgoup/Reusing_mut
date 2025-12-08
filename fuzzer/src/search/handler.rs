@@ -1,5 +1,6 @@
 use super::*;
 use crate::stats::Counter;
+use std::collections::HashSet;
 
 pub struct SearchHandler<'a> {
     running: Arc<AtomicBool>,
@@ -8,6 +9,7 @@ pub struct SearchHandler<'a> {
     pub buf: Vec<u8>,
     pub max_times: Counter,
     pub skip: bool,
+    pub mutated_offsets: HashSet<u32>,
 }
 
 impl<'a> SearchHandler<'a> {
@@ -26,7 +28,28 @@ impl<'a> SearchHandler<'a> {
             buf,
             max_times: config::MAX_SEARCH_EXEC_NUM.into(),
             skip: false,
+            mutated_offsets: HashSet::new(),
         }
+    }
+
+    pub fn record_mutated_offset(&mut self, offset: u32) {
+        self.mutated_offsets.insert(offset);
+        trace!("[MutatedOffset] Recorded single offset: {}", offset);
+    }
+
+    pub fn record_mutated_range(&mut self, start: usize, end: usize) {
+        for offset in start..end {
+            self.mutated_offsets.insert(offset as u32);
+        }
+        trace!("[MutatedOffset] Recorded range: {}..{}", start, end);
+    }
+
+    pub fn clear_mutated_offsets(&mut self) {
+        self.mutated_offsets.clear();
+    }
+
+    pub fn get_mutated_offsets(&self) -> &HashSet<u32> {
+        &self.mutated_offsets
     }
 
     pub fn is_stopped_or_skip(&self) -> bool {
@@ -55,18 +78,21 @@ impl<'a> SearchHandler<'a> {
     }
 
     pub fn execute(&mut self, buf: &Vec<u8>) {
+        self.executor.set_mutated_offsets(self.mutated_offsets.clone());
         let status = self.executor.run(buf, self.cond);
         self.process_status(status);
     }
 
     pub fn execute_input(&mut self, input: &MutInput) {
         input.write_to_input(&self.cond.offsets, &mut self.buf);
+        self.executor.set_mutated_offsets(self.mutated_offsets.clone());
         let status = self.executor.run(&self.buf, self.cond);
         self.process_status(status);
     }
 
     pub fn execute_cond(&mut self, input: &MutInput) -> u64 {
         input.write_to_input(&self.cond.offsets, &mut self.buf);
+        self.executor.set_mutated_offsets(self.mutated_offsets.clone());
         let (status, f_output) = self.executor.run_with_cond(&self.buf, self.cond);
         self.process_status(status);
         // output will be u64::MAX if unreachable, including timeout and crash
@@ -74,12 +100,14 @@ impl<'a> SearchHandler<'a> {
     }
 
     pub fn execute_cond_direct(&mut self) -> u64 {
+        self.executor.set_mutated_offsets(self.mutated_offsets.clone());
         let (status, f_output) = self.executor.run_with_cond(&self.buf, self.cond);
         self.process_status(status);
         f_output
     }
 
     pub fn execute_input_direct(&mut self) {
+        self.executor.set_mutated_offsets(self.mutated_offsets.clone());
         let status = self.executor.run(&self.buf, self.cond);
         self.process_status(status);
     }

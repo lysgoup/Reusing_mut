@@ -8,7 +8,7 @@ use crate::{
 use angora_common::{config, defs};
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::Path,
     process::{Command, Stdio},
     sync::{
@@ -34,6 +34,7 @@ pub struct Executor {
     pub last_new_cond_branches: Vec<(u32, u32, u32, u32)>, // (cmpid, context, order, condition)
     pub global_stats: Arc<RwLock<stats::ChartStats>>,
     pub local_stats: stats::LocalStats,
+    pub current_mutated_offsets: HashSet<u32>,
 }
 
 impl Executor {
@@ -101,7 +102,16 @@ impl Executor {
             last_new_cond_branches: Vec::new(),
             global_stats,
             local_stats: Default::default(),
+            current_mutated_offsets: HashSet::new(),
         }
+    }
+
+    pub fn set_mutated_offsets(&mut self, offsets: HashSet<u32>) {
+        self.current_mutated_offsets = offsets;
+    }
+
+    pub fn clear_mutated_offsets(&mut self) {
+        self.current_mutated_offsets.clear();
     }
 
     pub fn rebind_forksrv(&mut self) {
@@ -254,7 +264,8 @@ impl Executor {
                 if !crash_or_tmout {
                     let cond_stmts = self.track(id, buf, speed);
                     if cond_stmts.len() > 0 {
-                        let new_cond_branches = self.depot.add_entries(cond_stmts);
+                        // Filter cond_stmts based on mutated offsets
+                        let new_cond_branches = self.depot.add_entries_with_filter(cond_stmts, &self.current_mutated_offsets);
                         self.last_new_cond_branches.extend(new_cond_branches);
                         if self.cmd.enable_afl {
                             self.depot

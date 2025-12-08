@@ -237,7 +237,7 @@ pub fn save_to_text(path: &Path) -> io::Result<()> {
 
       for (i, record) in records.iter().enumerate() {
         // writeln!(file, "    [{}] cmpid={}, order={}, context={}, op={:#x}, lb1={}, lb2={}, condition={}, belong={}, arg1={}, arg2={}", i, record.cmpid, record.order, record.context, record.op, record.lb1, record.lb2, record.condition, record.belong, record.arg1, record.arg2)?;
-
+        writeln!(file, "        Cmpid: {:?}", record.cmpid)?;
         writeln!(file, "        Offsets: {:?}", record.offsets)?;
         writeln!(file, "        Critical values: {:?}", record.critical_values)?;
       }
@@ -271,4 +271,44 @@ pub fn get_next_records(
   };
 
   Some(selected)
+}
+
+// Check if any taint offset overlaps with mutated offsets
+fn offsets_overlap(taint_offsets: &Vec<TagSeg>, mutated_offsets: &HashSet<u32>) -> bool {
+  for seg in taint_offsets {
+    for offset in seg.begin..seg.end {
+      if mutated_offsets.contains(&offset) {
+        return true;
+      }
+    }
+  }
+  false
+}
+
+// Add cond to pattern map only if its offsets overlap with mutated offsets
+pub fn add_cond_to_pattern_map_with_filter(
+  cond: &CondStmt,
+  depot: &Depot,
+  mutated_offsets: &HashSet<u32>
+) {
+  // If mutated_offsets is empty, add without filtering (for initial seeds or non-mutation cases)
+  if mutated_offsets.is_empty() {
+    debug!("[LabelPattern] mutated_offsets is empty, adding without filter");
+    add_cond_to_pattern_map(cond, depot);
+    return;
+  }
+
+  // Check if this cond's offsets overlap with mutated offsets
+  let has_overlap = offsets_overlap(&cond.offsets, mutated_offsets) ||
+                    (!cond.offsets_opt.is_empty() && offsets_overlap(&cond.offsets_opt, mutated_offsets));
+
+  if !has_overlap {
+    debug!("[LabelPattern] No overlap - cond offsets: {:?}, mutated: {:?}",
+           cond.offsets, mutated_offsets);
+    return;
+  }
+
+  debug!("[LabelPattern] Overlap found - adding to pattern map");
+  // If overlaps, add to pattern map
+  add_cond_to_pattern_map(cond, depot);
 }
