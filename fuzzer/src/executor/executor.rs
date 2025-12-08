@@ -31,6 +31,7 @@ pub struct Executor {
     invariable_cnt: usize,
     pub last_f: u64,
     pub has_new_path: bool,
+    pub last_new_cond_branches: Vec<(u32, u32, u32, u32)>, // (cmpid, context, order, condition)
     pub global_stats: Arc<RwLock<stats::ChartStats>>,
     pub local_stats: stats::LocalStats,
 }
@@ -97,6 +98,7 @@ impl Executor {
             invariable_cnt: 0,
             last_f: defs::UNREACHABLE,
             has_new_path: false,
+            last_new_cond_branches: Vec::new(),
             global_stats,
             local_stats: Default::default(),
         }
@@ -252,7 +254,8 @@ impl Executor {
                 if !crash_or_tmout {
                     let cond_stmts = self.track(id, buf, speed);
                     if cond_stmts.len() > 0 {
-                        self.depot.add_entries(cond_stmts);
+                        let new_cond_branches = self.depot.add_entries(cond_stmts);
+                        self.last_new_cond_branches.extend(new_cond_branches);
                         if self.cmd.enable_afl {
                             self.depot
                                 .add_entries(vec![cond_stmt::CondStmt::get_afl_cond(
@@ -280,6 +283,7 @@ impl Executor {
 
     fn run_init(&mut self) {
         self.has_new_path = false;
+        self.last_new_cond_branches.clear();
         self.local_stats.num_exec.count();
     }
 

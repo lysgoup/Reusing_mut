@@ -2,9 +2,34 @@ use crate::depot::{LABEL_PATTERN_MAP, extract_pattern_merged, CondRecord, get_ne
 use crate::search::SearchHandler;
 use rand::seq::SliceRandom;
 use angora_common::tag::TagSeg;
+use angora_common::defs::{COND_FALSE_ST, COND_TRUE_ST};
 use crate::stats::REUSING_STATS;
 use std::fs::OpenOptions;
 use std::io::Write;
+
+// 조건문 branch 정보를 포맷팅하는 helper 함수
+fn format_cond_branches(branches: &[(u32, u32, u32, u32)]) -> String {
+    if branches.is_empty() {
+        return "[]".to_string();
+    }
+
+    let formatted: Vec<String> = branches.iter().map(|(cmpid, context, order, condition)| {
+        let branch_type = if *condition == COND_FALSE_ST {
+            "false"
+        } else if *condition == COND_TRUE_ST {
+            "true"
+        } else {
+            "unknown"
+        };
+        format!("cmpid={}:ctx={}:ord={}:{}", cmpid, context, order, branch_type)
+    }).collect();
+
+    if formatted.len() <= 5 {
+        format!("[{}]", formatted.join(", "))
+    } else {
+        format!("[{}, ... (+{} more)]", formatted[..5].join(", "), formatted.len() - 5)
+    }
+}
 
 // 로그 파일에 기록하는 helper 함수
 fn log_to_file(handler: &SearchHandler, message: &str) {
@@ -88,15 +113,18 @@ pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) ->
                             .map(|seg| format!("[{}..{}]", seg.begin, seg.end))
                             .collect();
 
+                        // 새로 커버된 조건문 branch 정보
+                        let cond_branches_info = format_cond_branches(&handler.executor.last_new_cond_branches);
+
                         let log_msg = format!(
                             "[ORIGINAL REUSING] input_id={}, cmpid={}, pattern={:?}, \
-                             target_offsets={:?}, critical_values={:?}, source_input_id={}, source_cmpid={}, source_offsets={:?}, \
-                             new_queue_input=id:{:06}",
+                             offsets={:?}, critical_values={:?}, values_input_id={}, values_cmpid={}, values_offsets={:?}, \
+                             new_cond_branches={}, new_queue_input=id:{:06}",
                             handler.cond.base.belong, handler.cond.base.cmpid, pattern,
                             target_offsets, record.critical_values, record.belong, record.cmpid, source_offsets,
-                            new_input_id
+                            cond_branches_info, new_input_id
                         );
-                        info!("{}", log_msg);
+                        // info!("{}", log_msg);
                         log_to_file(handler, &log_msg);
                     }
                 }
@@ -254,13 +282,16 @@ fn try_combined_segments(handler: &mut SearchHandler, pattern: &Vec<u32>, iterat
                     .map(|seg| format!("[{}..{}]", seg.begin, seg.end))
                     .collect();
 
+                // 새로 커버된 조건문 branch 정보
+                let cond_branches_info = format_cond_branches(&handler.executor.last_new_cond_branches);
+
                 let log_msg = format!(
                     "[COMBINING REUSING] input_id={}, cmpid={}, pattern={:?}, \
-                     target_offsets={:?}, combined_values={:?}, new_queue_input=id:{:06}",
+                     target_offsets={:?}, combined_values={:?}, new_cond_branches={}, new_queue_input=id:{:06}",
                     handler.cond.base.belong, handler.cond.base.cmpid, pattern,
-                    target_offsets, combined_values, new_input_id
+                    target_offsets, combined_values, cond_branches_info, new_input_id
                 );
-                info!("{}", log_msg);
+                // info!("{}", log_msg);
                 log_to_file(handler, &log_msg);
             }
         }

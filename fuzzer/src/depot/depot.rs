@@ -108,7 +108,8 @@ impl Depot {
             })
     }
 
-    pub fn add_entries(&self, conds: Vec<CondStmt>) {
+    pub fn add_entries(&self, conds: Vec<CondStmt>) -> Vec<(u32, u32, u32, u32)> {
+        let mut new_branches = Vec::new();
         let mut q = match self.queue.lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
@@ -134,6 +135,13 @@ impl Depot {
                         // If existed one and our new one has two different conditions,
                         // this indicate that it is explored.
                         if v.0.base.condition != cond.base.condition {
+                            // 새로운 branch 발견! (반대편 branch 커버)
+                            new_branches.push((
+                                cond.base.cmpid,
+                                cond.base.context,
+                                cond.base.order,
+                                cond.base.condition
+                            ));
                             v.0.mark_as_done();
                             q.change_priority(&cond, QPriority::done());
                         } else {
@@ -147,6 +155,14 @@ impl Depot {
                         }
                     }
                 } else {
+                    // 완전히 새로운 조건문 또는 이미 done인 조건문의 새 인스턴스
+                    // 완전히 새로운 branch 발견!
+                    new_branches.push((
+                        cond.base.cmpid,
+                        cond.base.context,
+                        cond.base.order,
+                        cond.base.condition
+                    ));
                     let priority = QPriority::init(cond.base.op);
                     label_pattern_tracker::add_cond_to_pattern_map(&cond, self);
                     q.push(cond, priority);
@@ -155,6 +171,7 @@ impl Depot {
             }
         }
         label_pattern_tracker::print_stats();
+        new_branches
     }
 
     pub fn update_entry(&self, cond: CondStmt) {
