@@ -47,7 +47,8 @@ fn merge_continuous_segments(offsets: &Vec<TagSeg>) -> Vec<TagSeg> {
   for i in 1..offsets.len() {
       let next = offsets[i];
 
-      if current.end == next.begin && current.sign == next.sign {
+      // if current.end == next.begin && current.sign == next.sign {
+      if current.end == next.begin {
           current.end = next.end;
       } else {
           merged.push(current);
