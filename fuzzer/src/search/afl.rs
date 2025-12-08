@@ -65,7 +65,11 @@ impl<'a> AFLFuzz<'a> {
                 break;
             }
             let mut buf = self.handler.buf.clone();
-            self.havoc_flip(&mut buf, max_stacking, choice_range);
+            let mutated_offsets = self.havoc_flip(&mut buf, max_stacking, choice_range);
+            self.handler.clear_mutated_offsets();
+            for offset in mutated_offsets {
+                self.handler.record_mutated_offset(offset);
+            }
             self.handler.execute(&buf);
         }
     }
@@ -110,6 +114,20 @@ impl<'a> AFLFuzz<'a> {
         let buf1 = self.handler.buf.clone();
         let buf2 = self.handler.executor.random_input_buf();
         if let Some(new_buf) = Self::splice_two_vec(&buf1, &buf2) {
+            // Record mutated offsets (find difference between buf1 and new_buf)
+            self.handler.clear_mutated_offsets();
+            let len = std::cmp::min(buf1.len(), new_buf.len());
+            for i in 0..len {
+                if buf1[i] != new_buf[i] {
+                    self.handler.record_mutated_offset(i as u32);
+                }
+            }
+            // If sizes differ, record the different part
+            if new_buf.len() > buf1.len() {
+                for i in buf1.len()..new_buf.len() {
+                    self.handler.record_mutated_offset(i as u32);
+                }
+            }
             self.handler.execute(&new_buf);
             true
         } else {
@@ -118,10 +136,11 @@ impl<'a> AFLFuzz<'a> {
     }
 
     // TODO both endian?
-    fn havoc_flip(&self, buf: &mut Vec<u8>, max_stacking: usize, choice_range: Uniform<u32>) {
+    fn havoc_flip(&self, buf: &mut Vec<u8>, max_stacking: usize, choice_range: Uniform<u32>) -> Vec<u32> {
         let mut rng = rand::thread_rng();
         let mut byte_len = buf.len() as u32;
         let use_stacking = 1 + rng.gen_range(0, max_stacking);
+        let mut mutated_offsets = Vec::new();
 
         for _ in 0..use_stacking {
             match rng.sample(choice_range) {
@@ -130,6 +149,7 @@ impl<'a> AFLFuzz<'a> {
                     let byte_idx: u32 = rng.gen_range(0, byte_len);
                     let bit_idx: u32 = rng.gen_range(0, 8);
                     buf[byte_idx as usize] ^= 128 >> bit_idx;
+                    mutated_offsets.push(byte_idx);
                 },
                 2 | 3 => {
                     //add or sub
@@ -147,6 +167,9 @@ impl<'a> AFLFuzz<'a> {
                             direction,
                             v as u64,
                         );
+                        for i in 0..size {
+                            mutated_offsets.push(byte_idx + i as u32);
+                        }
                     }
                 },
                 4 => {
@@ -158,6 +181,9 @@ impl<'a> AFLFuzz<'a> {
                         let vals = get_interesting_bytes(size);
                         let wh = rng.gen_range(0, vals.len() as u32);
                         mut_input::set_val_in_buf(buf, byte_idx as usize, size, vals[wh as usize]);
+                        for i in 0..size {
+                            mutated_offsets.push(byte_idx + i as u32);
+                        }
                     }
                 },
                 5 => {
@@ -165,6 +191,7 @@ impl<'a> AFLFuzz<'a> {
                     let byte_idx: u32 = rng.gen_range(0, byte_len);
                     let val: u8 = rng.gen();
                     buf[byte_idx as usize] = val;
+                    mutated_offsets.push(byte_idx);
                 },
                 6 => {
                     // delete bytes
@@ -175,6 +202,7 @@ impl<'a> AFLFuzz<'a> {
                         let byte_idx: u32 = rng.gen_range(0, byte_len);
                         for _ in 0..remove_len {
                             buf.remove(byte_idx as usize);
+                            mutated_offsets.push(byte_idx);
                         }
                     }
                 },
@@ -187,12 +215,14 @@ impl<'a> AFLFuzz<'a> {
                         byte_len = new_len;
                         for i in 0..add_len {
                             buf.insert((byte_idx + i) as usize, rng.gen());
+                            mutated_offsets.push(byte_idx + i);
                         }
                     }
                 },
                 _ => {},
             }
         }
+        mutated_offsets
     }
 
     fn random_len(&mut self) {
@@ -210,8 +240,14 @@ impl<'a> AFLFuzz<'a> {
             let step = rng.gen::<usize>() % orig_len + 1;
             let mut v = vec![0u8; step];
             rng.fill_bytes(&mut v);
+            let prev_len = buf.len();
             buf.append(&mut v);
             if buf.len() < config::MAX_INPUT_LEN {
+                // Record mutated offsets (appended bytes)
+                self.handler.clear_mutated_offsets();
+                for i in prev_len..buf.len() {
+                    self.handler.record_mutated_offset(i as u32);
+                }
                 self.handler.execute(&buf);
             } else {
                 break;
@@ -231,9 +267,15 @@ impl<'a> AFLFuzz<'a> {
         for _ in 0..4 {
             let mut v = vec![0u8; step];
             rng.fill_bytes(&mut v);
+            let prev_len = buf.len();
             buf.append(&mut v);
             step = step * 2;
             if buf.len() < config::MAX_INPUT_LEN {
+                // Record mutated offsets (appended bytes)
+                self.handler.clear_mutated_offsets();
+                for i in prev_len..buf.len() {
+                    self.handler.record_mutated_offset(i as u32);
+                }
                 self.handler.execute(&buf);
             } else {
                 break;

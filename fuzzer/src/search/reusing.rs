@@ -137,6 +137,7 @@ fn try_combined_segments(handler: &mut SearchHandler, pattern: &Vec<u32>, iterat
         warn!("[Reusing] Cannot combine: some segment pools are empty");
         return 0;
     }
+    info!("check!!!!");
 
     // info!("[Reusing] All segment pools available, starting combined mutations");
     // ✅ 병합 오프셋을 루프 밖에서 1회만 계산
