@@ -20,7 +20,7 @@ pub struct CondRecord {
     // pub lb1: u32,
     // pub lb2: u32,
     // pub condition: u32,
-    // pub belong: u32,
+    pub belong: u32,
     // pub arg1: u64,
     // pub arg2: u64,
     pub offsets: Vec<TagSeg>,
@@ -47,7 +47,8 @@ fn merge_continuous_segments(offsets: &Vec<TagSeg>) -> Vec<TagSeg> {
   for i in 1..offsets.len() {
       let next = offsets[i];
 
-      if current.end == next.begin && current.sign == next.sign {
+      // if current.end == next.begin && current.sign == next.sign {
+      if current.end == next.begin{
           current.end = next.end;
       } else {
           merged.push(current);
@@ -157,7 +158,7 @@ fn create_single_record(
       // lb1: cond.base.lb1,
       // lb2: cond.base.lb2,
       // condition: cond.base.condition,
-      // belong: cond.base.belong,
+      belong: cond.base.belong,
       // arg1: cond.base.arg1,
       // arg2: cond.base.arg2,
       offsets: offsets.clone(),

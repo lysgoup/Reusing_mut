@@ -36,6 +36,10 @@ pub struct Executor {
 }
 
 impl Executor {
+    pub fn get_depot(&self) -> &Arc<depot::Depot> {
+        &self.depot
+    }
+
     pub fn new(
         cmd: command::CommandOpt,
         global_branches: Arc<branches::GlobalBranches>,

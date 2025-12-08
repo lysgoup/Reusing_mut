@@ -3,6 +3,26 @@ use crate::search::SearchHandler;
 use rand::seq::SliceRandom;
 use angora_common::tag::TagSeg;
 use crate::stats::REUSING_STATS;
+use std::fs::OpenOptions;
+use std::io::Write;
+
+// 로그 파일에 기록하는 helper 함수
+fn log_to_file(handler: &SearchHandler, message: &str) {
+    let depot = handler.executor.get_depot();
+    let log_path = depot.dirs.inputs_dir
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("reusing_success.log");
+
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    {
+        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+        let _ = writeln!(file, "[{}] {}", timestamp, message);
+    }
+}
 
 // Reusing mutation
 pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) -> bool {
@@ -47,11 +67,38 @@ pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) ->
                     // warn!("[Reusing] Stopped early at iteration {}/{}", i, actual_iterations);
                     break;
                 }
-    
+
                 if insert_critical_value_with_merged(handler, record, &merged_offsets) {
                     let buf = handler.buf.clone();
                     handler.execute(&buf);
                     execution_count += 1;
+
+                    // 새로운 경로 발견 여부 확인
+                    if handler.executor.has_new_path {
+                        let depot = handler.executor.get_depot();
+                        let new_input_id = depot.num_inputs.load(std::sync::atomic::Ordering::Relaxed) - 1;
+
+                        // 삽입된 offset 정보 (merged_offsets 사용)
+                        let target_offsets: Vec<String> = merged_offsets.iter()
+                            .map(|seg| format!("[{}..{}]", seg.begin, seg.end))
+                            .collect();
+
+                        // 값의 출처 정보 (record의 cmpid와 offsets)
+                        let source_offsets: Vec<String> = record.offsets.iter()
+                            .map(|seg| format!("[{}..{}]", seg.begin, seg.end))
+                            .collect();
+
+                        let log_msg = format!(
+                            "[ORIGINAL REUSING] input_id={}, cmpid={}, pattern={:?}, \
+                             target_offsets={:?}, critical_values={:?}, source_input_id={}, source_cmpid={}, source_offsets={:?}, \
+                             new_queue_input=id:{:06}",
+                            handler.cond.base.belong, handler.cond.base.cmpid, pattern,
+                            target_offsets, record.critical_values, record.belong, record.cmpid, source_offsets,
+                            new_input_id
+                        );
+                        info!("{}", log_msg);
+                        log_to_file(handler, &log_msg);
+                    }
                 }
             }
     
@@ -196,6 +243,26 @@ fn try_combined_segments(handler: &mut SearchHandler, pattern: &Vec<u32>, iterat
             let buf = handler.buf.clone();
             handler.execute(&buf);
             execution_count += 1;
+
+            // 새로운 경로 발견 여부 확인
+            if handler.executor.has_new_path {
+                let depot = handler.executor.get_depot();
+                let new_input_id = depot.num_inputs.load(std::sync::atomic::Ordering::Relaxed) - 1;
+
+                // 삽입된 offset 정보
+                let target_offsets: Vec<String> = merged_offsets.iter()
+                    .map(|seg| format!("[{}..{}]", seg.begin, seg.end))
+                    .collect();
+
+                let log_msg = format!(
+                    "[COMBINING REUSING] input_id={}, cmpid={}, pattern={:?}, \
+                     target_offsets={:?}, combined_values={:?}, new_queue_input=id:{:06}",
+                    handler.cond.base.belong, handler.cond.base.cmpid, pattern,
+                    target_offsets, combined_values, new_input_id
+                );
+                info!("{}", log_msg);
+                log_to_file(handler, &log_msg);
+            }
         }
     }
     execution_count
@@ -239,7 +306,8 @@ fn merge_continuous_segments(offsets: &Vec<TagSeg>) -> Vec<TagSeg> {
 
     for i in 1..offsets.len() {
         let next = offsets[i];
-        if current.end == next.begin && current.sign == next.sign {
+        // if current.end == next.begin && current.sign == next.sign {
+        if current.end == next.begin{
             current.end = next.end;
         } else {
             merged.push(current);
