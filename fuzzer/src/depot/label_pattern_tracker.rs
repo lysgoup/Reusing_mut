@@ -88,6 +88,31 @@ fn extract_value_from_label(offsets: &Vec<TagSeg>, input_buf: &Vec<u8>) -> Vec<V
   critical_values
 }
 
+// arg 값을 바이트 배열로 변환 (size에 맞춰서)
+fn arg_to_bytes(arg: u64, size: u32) -> Vec<u8> {
+  let bytes = arg.to_le_bytes();  // little-endian
+  match size {
+      1 => vec![bytes[0]],
+      2 => bytes[0..2].to_vec(),
+      4 => bytes[0..4].to_vec(),
+      8 => bytes.to_vec(),
+      _ => {
+          // size가 1,2,4,8이 아닌 경우는 filter에서 걸러지지만, 안전을 위해
+          if size <= 8 {
+              bytes[0..size as usize].to_vec()
+          } else {
+              bytes.to_vec()
+          }
+      }
+  }
+}
+
+// 상수 arg 값을 pattern에 맞게 복제 (여러 세그먼트가 있는 경우)
+fn replicate_constant_for_pattern(arg: u64, size: u32, num_segments: usize) -> Vec<Vec<u8>> {
+  let constant_bytes = arg_to_bytes(arg, size);
+  vec![constant_bytes; num_segments]
+}
+
 fn create_record_for_offsets(
   offsets: &Vec<TagSeg>,
   cond: &CondStmt,
@@ -104,7 +129,7 @@ fn create_record_for_offsets(
   let input_buf = depot.get_input_buf(cond.base.belong as usize);
   let critical_values = extract_value_from_label(offsets, &input_buf);
 
-  // 1. 전체 패턴 레코드 생성 (기존 로직)
+  // 1. 전체 패턴 레코드 생성 (기존 로직 - 입력에서 추출한 값)
   create_single_record(
       &pattern,
       offsets,
@@ -127,6 +152,47 @@ fn create_record_for_offsets(
               cond,
               operand_num,
           );
+      }
+  }
+
+  // 3. 상수 arg 값도 별도 레코드로 저장 (한 쪽만 taint된 경우)
+  let constant_arg = if cond.base.lb1 > 0 && cond.base.lb2 == 0 {
+      Some(cond.base.arg2)  // arg2가 상수
+  } else if cond.base.lb1 == 0 && cond.base.lb2 > 0 {
+      Some(cond.base.arg1)  // arg1이 상수
+  } else {
+      None  // 둘 다 taint되었거나 둘 다 상수
+  };
+
+  if let Some(constant) = constant_arg {
+      let num_segments = merged_offsets.len();
+      let constant_values = replicate_constant_for_pattern(constant, cond.base.size, num_segments);
+
+      // 3-1. 전체 패턴에 대해 상수 값 레코드 생성
+      create_single_record(
+          &pattern,
+          offsets,
+          &constant_values,
+          cond,
+          operand_num,
+      );
+
+      // 3-2. 개별 세그먼트에 대해서도 상수 값 레코드 생성
+      if merged_offsets.len() > 1 {
+          let single_constant_value = arg_to_bytes(constant, cond.base.size);
+          for i in 0..merged_offsets.len() {
+              let single_segment = vec![merged_offsets[i]];
+              let single_pattern = vec![merged_offsets[i].end - merged_offsets[i].begin];
+              let single_constant_values = vec![single_constant_value.clone()];
+
+              create_single_record(
+                  &single_pattern,
+                  &single_segment,
+                  &single_constant_values,
+                  cond,
+                  operand_num,
+              );
+          }
       }
   }
 }

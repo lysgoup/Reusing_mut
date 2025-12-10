@@ -179,6 +179,9 @@ impl Depot {
                             v.0.mark_as_done();
                             q.change_priority(&cond, QPriority::done());
                         } else {
+                            // condition이 같아도 mutate한 부분과 겹치면 CondRecord에 추가
+                            label_pattern_tracker::add_cond_to_pattern_map_with_filter(&cond, self, mutated_offsets);
+
                             // Existed, but the new one are better
                             // If the cond is faster than the older one, we prefer the faster,
                             if config::PREFER_FAST_COND && v.0.speed > cond.speed {
