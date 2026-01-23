@@ -1,4 +1,4 @@
-FROM ubuntu:16.04
+FROM ubuntu:18.04
 
 RUN apt-get update && \
     apt-get -y upgrade && \
@@ -21,7 +21,7 @@ RUN ./build/install_rust.sh
 RUN PREFIX=/ ./build/install_llvm.sh
 RUN ./build/install_tools.sh
 RUN ./build/build.sh
-RUN ./build/install_pin_mode.sh
+# RUN ./build/install_pin_mode.sh
 
 VOLUME ["/data"]
 WORKDIR /data
