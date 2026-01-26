@@ -46,6 +46,12 @@ impl<'a> FnFuzz<'a> {
     }
 
     pub fn run(&mut self) {
+        // Record mutated offsets
+        let offsets = self.handler.cond.offsets.clone();
+        for seg in &offsets {
+            self.handler.record_mutated_range(seg.begin as usize, seg.end as usize);
+        }
+
         let input = self.handler.get_f_input();
         let len = self.handler.cond.base.size as usize; // magic bytes's length
         if len > self.handler.cond.variables.len() {

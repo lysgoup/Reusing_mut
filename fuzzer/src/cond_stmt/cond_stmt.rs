@@ -18,6 +18,8 @@ pub struct CondStmt {
     pub state: CondState,
     pub num_minimal_optima: usize,
     pub linear: bool,
+
+    pub reusing_record_index: usize,
 }
 
 impl PartialEq for CondStmt {
@@ -51,6 +53,7 @@ impl CondStmt {
             state: CondState::default(),
             num_minimal_optima: 0,
             linear: false,
+            reusing_record_index: 0,
         }
     }
 

@@ -36,6 +36,13 @@ impl<'a> OneByteFuzz<'a> {
             error!("one byte len > 1, cond: {:?}", self.handler.cond);
             panic!();
         }
+
+        // Record mutated offsets (all offsets in cond.offsets)
+        let offsets = self.handler.cond.offsets.clone();
+        for seg in &offsets {
+            self.handler.record_mutated_range(seg.begin as usize, seg.end as usize);
+        }
+
         self.execute_direct();
         for i in 0..256 {
             if self.handler.cond.is_done() {

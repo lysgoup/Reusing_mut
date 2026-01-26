@@ -14,15 +14,15 @@ pub type LabelPattern = Vec<u32>;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CondRecord {
     pub cmpid: u32,
-    pub order: u32,
-    pub context: u32,
-    pub op: u32,
-    pub lb1: u32,
-    pub lb2: u32,
-    pub condition: u32,
-    pub belong: u32,
-    pub arg1: u64,
-    pub arg2: u64,
+    // pub order: u32,
+    // pub context: u32,
+    // pub op: u32,
+    // pub lb1: u32,
+    // pub lb2: u32,
+    // pub condition: u32,
+    // pub belong: u32,
+    // pub arg1: u64,
+    // pub arg2: u64,
     pub offsets: Vec<TagSeg>,
     pub critical_values: Vec<Vec<u8>>,
 }
@@ -30,9 +30,6 @@ pub struct CondRecord {
 lazy_static! {
     pub static ref LABEL_PATTERN_MAP: Mutex<HashMap<LabelPattern, Vec<CondRecord>>> =
       Mutex::new(HashMap::new());
-
-    static ref ADDED_COND_IDS: Mutex<HashSet<(u32, u32, u32, LabelPattern, u8)>> =
-      Mutex::new(HashSet::new());
 }
 
 pub fn extract_pattern(offsets: &Vec<TagSeg>) -> LabelPattern {
@@ -50,7 +47,8 @@ fn merge_continuous_segments(offsets: &Vec<TagSeg>) -> Vec<TagSeg> {
   for i in 1..offsets.len() {
       let next = offsets[i];
 
-      if current.end == next.begin && current.sign == next.sign {
+      // if current.end == next.begin && current.sign == next.sign {
+      if current.end == next.begin {
           current.end = next.end;
       } else {
           merged.push(current);
@@ -91,64 +89,83 @@ fn extract_value_from_label(offsets: &Vec<TagSeg>, input_buf: &Vec<u8>) -> Vec<V
 }
 
 fn create_record_for_offsets(
-    offsets: &Vec<TagSeg>,
-    cond: &CondStmt,
-    depot: &Depot,
-    operand_num: u8,
+  offsets: &Vec<TagSeg>,
+  cond: &CondStmt,
+  depot: &Depot,
+  operand_num: u8,
 ) {
-    if offsets.is_empty() {
-        return;
-    }
+  if offsets.is_empty() {
+      return;
+  }
 
-    let pattern = extract_pattern_merged(offsets);
-    let cond_id = (
-        cond.base.cmpid,
-        cond.base.order >> 16,
-        cond.base.condition,
-        pattern.clone(),
-        operand_num,
-    );
+  // 병합된 세그먼트 추출
+  let merged_offsets = merge_continuous_segments(offsets);
+  let pattern = extract_pattern_merged(offsets);
+  let input_buf = depot.get_input_buf(cond.base.belong as usize);
+  let critical_values = extract_value_from_label(offsets, &input_buf);
 
-    let mut added_ids = ADDED_COND_IDS.lock().unwrap();
-    if added_ids.contains(&cond_id) {
-        return;
-    }
+  // 1. 전체 패턴 레코드 생성 (기존 로직)
+  create_single_record(
+      &pattern,
+      offsets,
+      &critical_values,
+      cond,
+      operand_num,
+  );
 
-    added_ids.insert(cond_id);
-    drop(added_ids);
+  // 2. 패턴이 2개 이상의 세그먼트로 구성되어 있다면 개별 세그먼트도 추가
+  if merged_offsets.len() > 1 {
+      for i in 0..merged_offsets.len() {
+          let single_segment = vec![merged_offsets[i]];
+          let single_pattern = vec![merged_offsets[i].end - merged_offsets[i].begin];
+          let single_critical_values = vec![critical_values[i].clone()];
 
-    let belong_id = cond.base.belong as usize;
-    let input_buf = depot.get_input_buf(belong_id);
-    let critical_values = extract_value_from_label(offsets, &input_buf);
+          create_single_record(
+              &single_pattern,
+              &single_segment,
+              &single_critical_values,
+              cond,
+              operand_num,
+          );
+      }
+  }
+}
 
-    let mut map = LABEL_PATTERN_MAP.lock().unwrap();
-    
-    //value가 존재하면 스킵
-    if let Some(existing_records) = map.get(&pattern) {
+// 헬퍼 함수: 실제 레코드 생성 로직
+fn create_single_record(
+  pattern: &LabelPattern,
+  offsets: &Vec<TagSeg>,
+  critical_values: &Vec<Vec<u8>>,
+  cond: &CondStmt,
+  operand_num: u8,
+) {
+  let mut map = LABEL_PATTERN_MAP.lock().unwrap();
+
+  // 중복 체크
+  if let Some(existing_records) = map.get(pattern) {
       for existing in existing_records.iter() {
-          if existing.critical_values == critical_values {
-              // info!("[LabelPattern] Skipped duplicate critical_value: pattern={:?}, values={:?}", pattern, critical_value);
+          if existing.critical_values == *critical_values {
               return;
           }
       }
-    }
+  }
 
-    let record = CondRecord {
+  let record = CondRecord {
       cmpid: cond.base.cmpid,
-      order: cond.base.order,
-      context: cond.base.context,
-      op: cond.base.op,
-      lb1: cond.base.lb1,
-      lb2: cond.base.lb2,
-      condition: cond.base.condition,
-      belong: cond.base.belong,
-      arg1: cond.base.arg1,
-      arg2: cond.base.arg2,
+      // order: cond.base.order,
+      // context: cond.base.context,
+      // op: cond.base.op,
+      // lb1: cond.base.lb1,
+      // lb2: cond.base.lb2,
+      // condition: cond.base.condition,
+      // belong: cond.base.belong,
+      // arg1: cond.base.arg1,
+      // arg2: cond.base.arg2,
       offsets: offsets.clone(),
-      critical_values,
+      critical_values: critical_values.clone(),
   };
 
-    map.entry(pattern).or_insert_with(Vec::new).push(record);
+  map.entry(pattern.clone()).or_insert_with(Vec::new).push(record);
 }
 
 fn add_single_label_record(cond: &CondStmt, depot: &Depot) {
@@ -219,9 +236,8 @@ pub fn save_to_text(path: &Path) -> io::Result<()> {
       writeln!(file, "  Records: {}", records.len())?;
 
       for (i, record) in records.iter().enumerate() {
-        writeln!(file, "    [{}] cmpid={}, order={}, context={}, op={:#x}, lb1={}, lb2={}, condition={}, belong={}, arg1={}, arg2={}",
-         i, record.cmpid, record.order, record.context, record.op, record.lb1, record.lb2, record.condition, record.belong, record.arg1, record.arg2)?;
-
+        // writeln!(file, "    [{}] cmpid={}, order={}, context={}, op={:#x}, lb1={}, lb2={}, condition={}, belong={}, arg1={}, arg2={}", i, record.cmpid, record.order, record.context, record.op, record.lb1, record.lb2, record.condition, record.belong, record.arg1, record.arg2)?;
+        writeln!(file, "        Cmpid: {:?}", record.cmpid)?;
         writeln!(file, "        Offsets: {:?}", record.offsets)?;
         writeln!(file, "        Critical values: {:?}", record.critical_values)?;
       }
@@ -230,4 +246,69 @@ pub fn save_to_text(path: &Path) -> io::Result<()> {
 
   info!("[LabelPattern] Saved to {:?}", path);
   Ok(())
+}
+
+pub fn get_next_records(
+  cond: &mut CondStmt,
+  pattern: &LabelPattern,
+  iterations: usize
+) -> Option<Vec<CondRecord>> {
+  let selected = {
+    let map = LABEL_PATTERN_MAP.lock().unwrap();
+    let records = map.get(pattern)?;
+
+    let total = records.len();
+    let start = cond.reusing_record_index;
+
+    if start >= total {
+        return None;
+    }
+
+    let end = (start + iterations).min(total);
+    cond.reusing_record_index = end;
+
+    records[start..end].to_vec()
+  };
+
+  Some(selected)
+}
+
+// Check if any taint offset overlaps with mutated offsets
+fn offsets_overlap(taint_offsets: &Vec<TagSeg>, mutated_offsets: &HashSet<u32>) -> bool {
+  for seg in taint_offsets {
+    for offset in seg.begin..seg.end {
+      if mutated_offsets.contains(&offset) {
+        return true;
+      }
+    }
+  }
+  false
+}
+
+// Add cond to pattern map only if its offsets overlap with mutated offsets
+pub fn add_cond_to_pattern_map_with_filter(
+  cond: &CondStmt,
+  depot: &Depot,
+  mutated_offsets: &HashSet<u32>
+) {
+  // If mutated_offsets is empty, add without filtering (for initial seeds or non-mutation cases)
+  if mutated_offsets.is_empty() {
+    debug!("[LabelPattern] mutated_offsets is empty, adding without filter");
+    add_cond_to_pattern_map(cond, depot);
+    return;
+  }
+
+  // Check if this cond's offsets overlap with mutated offsets
+  let has_overlap = offsets_overlap(&cond.offsets, mutated_offsets) ||
+                    (!cond.offsets_opt.is_empty() && offsets_overlap(&cond.offsets_opt, mutated_offsets));
+
+  if !has_overlap {
+    debug!("[LabelPattern] No overlap - cond offsets: {:?}, mutated: {:?}",
+           cond.offsets, mutated_offsets);
+    return;
+  }
+
+  debug!("[LabelPattern] Overlap found - adding to pattern map");
+  // If overlaps, add to pattern map
+  add_cond_to_pattern_map(cond, depot);
 }
