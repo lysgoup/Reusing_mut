@@ -856,14 +856,21 @@ bool AngoraLLVMPass::runOnModule(Module &M) {
 
   initVariables(M);
 
-  // ✨ 추가: cmpid_log.txt 파일 열기
-  cmpid_log_file.open("/angora/cmpid_log.txt", std::ios::out | std::ios::app);
+  // ✨ 추가: cmpid_log.txt 파일 열기 (로그 디렉토리 환경변수 지원)
+  std::string log_dir = "/angora";  // 기본값
+  const char *env_log_dir = getenv("ANGORA_PASS_LOG_DIR");
+  if (env_log_dir) {
+    log_dir = std::string(env_log_dir);
+  }
+  std::string log_path = log_dir + "/cmpid_log.txt";
+
+  cmpid_log_file.open(log_path, std::ios::out | std::ios::app);
   if (cmpid_log_file.is_open()) {
     cmpid_log_file << "# Module: " << ModName << " (ModId: " << ModId << ")\n";
     cmpid_log_file << "# Format: cmpid: filename, line, column\n";
-    OKF("cmpid_log.txt opened successfully");
+    OKF("cmpid_log.txt opened at: %s", log_path.c_str());
   } else {
-    errs() << "Warning: Could not open cmpid_log.txt\n";
+    errs() << "Warning: Could not open cmpid_log.txt at " << log_path << "\n";
   }
 
   if (DFSanMode)

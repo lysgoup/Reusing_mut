@@ -23,6 +23,6 @@ RUN ./build/install_tools.sh
 RUN ./build/build.sh
 # RUN ./build/install_pin_mode.sh
 
-VOLUME ["/data"]
+# VOLUME ["/data"]
 WORKDIR /data
-ENTRYPOINT [ "/opt/env.init" ]
+# ENTRYPOINT [ "/opt/env.init" ]
