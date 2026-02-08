@@ -129,6 +129,14 @@ pub fn fuzz_main(
 
     info!("Pattern map saved successfully!");
 
+    // Reusing 통계 저장
+    let reusing_stats = angora_out_dir.join("reusing_stats.txt");
+    if let Err(e) = depot::save_reusing_stats(&reusing_stats) {
+        warn!("Failed to save reusing statistics: {:?}", e);
+    } else {
+        info!("Reusing statistics saved successfully!");
+    }
+
     // cmpid_log.txt를 output dir로 복사
     let cmpid_log_source = PathBuf::from("cmpid_log.txt");
     if cmpid_log_source.exists() {

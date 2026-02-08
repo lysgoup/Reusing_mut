@@ -27,8 +27,36 @@ pub struct CondRecord {
     pub critical_values: Vec<Vec<u8>>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReusingPatternStats {
+    pub pattern: Vec<u32>,
+    pub total_records: usize,
+    pub max_index_reached: usize,
+    pub times_executed: usize,
+    pub stage1_attempts: usize,
+    pub stage2_attempts: usize,
+    pub success_count: usize,
+    pub combined_segment_success: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CondStmtReusingStats {
+    pub cmpid: u32,
+    pub context: u32,
+    pub order: u32,
+    pub pattern: Vec<u32>,
+    pub stage1_attempts: usize,
+    pub stage2_attempts: usize,
+}
+
 lazy_static! {
     pub static ref LABEL_PATTERN_MAP: Mutex<HashMap<LabelPattern, Vec<CondRecord>>> =
+      Mutex::new(HashMap::new());
+
+    pub static ref PATTERN_REUSING_STATS: Mutex<HashMap<Vec<u32>, ReusingPatternStats>> =
+      Mutex::new(HashMap::new());
+
+    pub static ref CONDSTMT_REUSING_STATS: Mutex<HashMap<(u32, u32, u32), CondStmtReusingStats>> =
       Mutex::new(HashMap::new());
 }
 
@@ -311,4 +339,168 @@ pub fn add_cond_to_pattern_map_with_filter(
   debug!("[LabelPattern] Overlap found - adding to pattern map");
   // If overlaps, add to pattern map
   add_cond_to_pattern_map(cond, depot);
+}
+
+// ============ Reusing Statistics Functions ============
+
+pub fn update_pattern_stats(
+    pattern: &Vec<u32>,
+    max_index: usize,
+    stage1_executed: bool,
+    stage2_executed: bool,
+    is_success: bool,
+) {
+    let mut stats_map = PATTERN_REUSING_STATS.lock().unwrap();
+
+    let total_records = {
+        let map = LABEL_PATTERN_MAP.lock().unwrap();
+        map.get(pattern).map(|v| v.len()).unwrap_or(0)
+    };
+
+    let stats = stats_map.entry(pattern.clone())
+        .or_insert_with(|| ReusingPatternStats {
+            pattern: pattern.clone(),
+            total_records,
+            max_index_reached: 0,
+            times_executed: 0,
+            stage1_attempts: 0,
+            stage2_attempts: 0,
+            success_count: 0,
+            combined_segment_success: 0,
+        });
+
+    stats.max_index_reached = stats.max_index_reached.max(max_index);
+    stats.times_executed += 1;
+    if stage1_executed { stats.stage1_attempts += 1; }
+    if stage2_executed { stats.stage2_attempts += 1; }
+    if is_success { stats.success_count += 1; }
+}
+
+pub fn update_combined_success(pattern: &Vec<u32>) {
+    let mut stats_map = PATTERN_REUSING_STATS.lock().unwrap();
+    if let Some(stats) = stats_map.get_mut(pattern) {
+        stats.combined_segment_success += 1;
+    }
+}
+
+pub fn update_condstmt_stats(
+    cmpid: u32,
+    context: u32,
+    order: u32,
+    pattern: &Vec<u32>,
+    stage1_executed: bool,
+    stage2_executed: bool,
+) {
+    let mut stats_map = CONDSTMT_REUSING_STATS.lock().unwrap();
+
+    let stats = stats_map.entry((cmpid, context, order))
+        .or_insert_with(|| CondStmtReusingStats {
+            cmpid,
+            context,
+            order,
+            pattern: pattern.clone(),
+            stage1_attempts: 0,
+            stage2_attempts: 0,
+        });
+
+    if stage1_executed { stats.stage1_attempts += 1; }
+    if stage2_executed { stats.stage2_attempts += 1; }
+}
+
+pub fn save_reusing_stats(path: &Path) -> io::Result<()> {
+    let pattern_stats_map = PATTERN_REUSING_STATS.lock().unwrap();
+    let condstmt_stats_map = CONDSTMT_REUSING_STATS.lock().unwrap();
+
+    let mut file = File::create(path)?;
+    writeln!(file, "# Reusing Statistics Report")?;
+    writeln!(file, "# Generated at: {}", chrono::Local::now())?;
+    writeln!(file)?;
+
+    // ===== Pattern Statistics =====
+    writeln!(file, "## Pattern-Level Statistics")?;
+    writeln!(file)?;
+
+    let mut sorted_patterns: Vec<_> = pattern_stats_map.values().collect();
+    sorted_patterns.sort_by_key(|s| std::cmp::Reverse(s.success_count));
+
+    writeln!(file, "{:<25} {:<15} {:<20} {:<12} {:<12} {:<12} {:<12} {:<15}",
+        "Pattern", "Total Records", "Max Used", "Times Exec", "Stage1", "Stage2", "Success", "Combined")?;
+    writeln!(file, "{:-<130}", "")?;
+
+    for stats in sorted_patterns.iter() {
+        let utilization = if stats.total_records > 0 {
+            (stats.max_index_reached as f64 / stats.total_records as f64 * 100.0) as u32
+        } else {
+            0
+        };
+
+        let pattern_str = format!("{:?}", stats.pattern);
+        let used_str = format!("{}/{} ({}%)", stats.max_index_reached, stats.total_records, utilization);
+
+        writeln!(file, "{:<25} {:<15} {:<20} {:<12} {:<12} {:<12} {:<12} {:<15}",
+            pattern_str,
+            stats.total_records,
+            used_str,
+            stats.times_executed,
+            stats.stage1_attempts,
+            stats.stage2_attempts,
+            stats.success_count,
+            stats.combined_segment_success
+        )?;
+    }
+
+    writeln!(file)?;
+    writeln!(file, "Pattern Summary:")?;
+    let total_patterns = pattern_stats_map.len();
+    let total_records: usize = pattern_stats_map.values().map(|s| s.total_records).sum();
+    let total_executed: usize = pattern_stats_map.values().map(|s| s.times_executed).sum();
+    let total_success: usize = pattern_stats_map.values().map(|s| s.success_count).sum();
+    let avg_success_rate = if total_executed > 0 {
+        (total_success as f64 / total_executed as f64 * 100.0) as u32
+    } else {
+        0
+    };
+
+    writeln!(file, "  Total Patterns: {}", total_patterns)?;
+    writeln!(file, "  Total Records: {}", total_records)?;
+    writeln!(file, "  Total Executions: {}", total_executed)?;
+    writeln!(file, "  Total Successes: {}", total_success)?;
+    writeln!(file, "  Overall Success Rate: {}%", avg_success_rate)?;
+
+    // ===== CondStmt Statistics =====
+    writeln!(file)?;
+    writeln!(file, "## CondStmt-Level Statistics")?;
+    writeln!(file)?;
+
+    let mut sorted_condstmts: Vec<_> = condstmt_stats_map.values().collect();
+    sorted_condstmts.sort_by_key(|s| (std::cmp::Reverse(s.stage1_attempts + s.stage2_attempts), s.cmpid));
+
+    writeln!(file, "{:<10} {:<10} {:<10} {:<20} {:<12} {:<12}",
+        "cmpid", "context", "order", "Pattern", "Stage1", "Stage2")?;
+    writeln!(file, "{:-<80}", "")?;
+
+    for stats in sorted_condstmts.iter() {
+        let pattern_str = format!("{:?}", stats.pattern);
+        writeln!(file, "{:<10} {:<10} {:<10} {:<20} {:<12} {:<12}",
+            stats.cmpid,
+            stats.context,
+            stats.order,
+            pattern_str,
+            stats.stage1_attempts,
+            stats.stage2_attempts
+        )?;
+    }
+
+    writeln!(file)?;
+    writeln!(file, "CondStmt Summary:")?;
+    let total_condstmts = condstmt_stats_map.len();
+    let total_stage1: usize = condstmt_stats_map.values().map(|s| s.stage1_attempts).sum();
+    let total_stage2: usize = condstmt_stats_map.values().map(|s| s.stage2_attempts).sum();
+
+    writeln!(file, "  Total CondStmts: {}", total_condstmts)?;
+    writeln!(file, "  Total Stage1 Attempts: {}", total_stage1)?;
+    writeln!(file, "  Total Stage2 Attempts: {}", total_stage2)?;
+
+    info!("[LabelPattern] Saved reusing statistics to {:?}", path);
+    Ok(())
 }

@@ -15,5 +15,13 @@ pub use self::label_pattern_tracker::{
   extract_pattern_merged,
   CondRecord,
   get_next_records,
+  update_pattern_stats,
+  update_condstmt_stats,
+  update_combined_success,
+  save_reusing_stats,
+  ReusingPatternStats,
+  CondStmtReusingStats,
+  PATTERN_REUSING_STATS,
+  CONDSTMT_REUSING_STATS,
 };
 use self::{depot_dir::DepotDir, qpriority::QPriority};
