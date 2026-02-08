@@ -14,6 +14,9 @@ use std::{
 pub fn sync_depot(executor: &mut Executor, running: Arc<AtomicBool>, dir: &Path) {
     executor.local_stats.clear();
     let seed_dir = dir.read_dir().expect("read_dir call failed");
+    let mut file_count = 0;
+    let mut discarded_count = 0;
+
     for entry in seed_dir {
         if let Ok(entry) = entry {
             if !running.load(Ordering::SeqCst) {
@@ -21,17 +24,31 @@ pub fn sync_depot(executor: &mut Executor, running: Arc<AtomicBool>, dir: &Path)
             }
             let path = &entry.path();
             if path.is_file() {
+                file_count += 1;
                 let file_len =
                     fs::metadata(path).expect("Could not fetch metadata.").len() as usize;
+
                 if file_len < config::MAX_INPUT_LEN {
+                    let prev_inputs = executor.local_stats.num_inputs.0;
+                    info!("[DRY-RUN] Processing seed {:?} (size: {} bytes)", path.file_name().unwrap_or_default(), file_len);
                     let buf = read_from_file(path);
                     executor.run_sync(&buf);
+
+                    if executor.local_stats.num_inputs.0 > prev_inputs {
+                        info!("  ✓ Found new branch/input");
+                    } else {
+                        info!("  ✗ No new branch discovered");
+                        discarded_count += 1;
+                    }
                 } else {
-                    warn!("Seed discarded, too long: {:?}", path);
+                    warn!("Seed discarded, too long: {:?} (size: {} bytes)", path.file_name().unwrap_or_default(), file_len);
+                    discarded_count += 1;
                 }
             }
         }
     }
+    info!("=== DRY-RUN SUMMARY ===");
+    info!("Total files: {}, Discarded: {}, Useful: {}", file_count, discarded_count, executor.local_stats.num_inputs.0);
     info!("sync {} file from seeds.", executor.local_stats.num_inputs);
     executor.update_log();
 }

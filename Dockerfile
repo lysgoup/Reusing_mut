@@ -24,5 +24,6 @@ RUN ./build/build.sh
 # RUN ./build/install_pin_mode.sh
 
 # VOLUME ["/data"]
-WORKDIR /data
+# WORKDIR /data
+RUN mkdir -p /data
 # ENTRYPOINT [ "/opt/env.init" ]

@@ -25,3 +25,4 @@ llvm_mode/build/
 *.s
 *.asan
 cmpid_log.txt
+_build_cache

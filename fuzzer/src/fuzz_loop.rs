@@ -16,7 +16,7 @@ pub fn fuzz_loop(
     global_branches: Arc<GlobalBranches>,
     global_stats: Arc<RwLock<stats::ChartStats>>,
 ) {
-    let search_method = cmd_opt.search_method;
+    // let search_method = cmd_opt.search_method;
     let mut executor = Executor::new(
         cmd_opt,
         global_branches,
@@ -70,8 +70,8 @@ pub fn fuzz_loop(
             let mut handler = SearchHandler::new(running.clone(), &mut executor, &mut cond, buf);
             match fuzz_type {
                 FuzzType::ExploreFuzz => {
-                    let solved_by_reusing = apply_reusing_mutation(&mut handler, 50);
-
+                    let _solved_by_reusing = apply_reusing_mutation(&mut handler, 50);
+                    /*
                     if solved_by_reusing {
                         info!("[FuzzLoop] Condition solved by reusing, skipping other mutations");
                         // ✅ 다른 mutation 건너뛰고 바로 다음 조건문으로
@@ -80,7 +80,7 @@ pub fn fuzz_loop(
                         if handler.cond.is_time_expired() {
                             handler.cond.next_state();
                         }
-            
+
                         if handler.cond.state.is_one_byte() {
                             OneByteFuzz::new(handler).run();
                         } else if handler.cond.state.is_det() {
@@ -102,10 +102,11 @@ pub fn fuzz_loop(
                             }
                         }
                     }
+                    */
                 },
                 FuzzType::ExploitFuzz => {
-                    let solved_by_reusing = apply_reusing_mutation(&mut handler, 50);
-            
+                    let _solved_by_reusing = apply_reusing_mutation(&mut handler, 50);
+                    /*
                     if !solved_by_reusing {
                         if handler.cond.state.is_one_byte() {
                             let mut fz = OneByteFuzz::new(handler);
@@ -115,15 +116,16 @@ pub fn fuzz_loop(
                             ExploitFuzz::new(handler).run();
                         }
                     }
+                    */
                 },
                 FuzzType::AFLFuzz => {
-                    AFLFuzz::new(handler).run();
+                    // AFLFuzz::new(handler).run();
                 },
                 FuzzType::LenFuzz => {
-                    LenFuzz::new(handler).run();
+                    // LenFuzz::new(handler).run();
                 },
                 FuzzType::CmpFnFuzz => {
-                    FnFuzz::new(handler).run();
+                    // FnFuzz::new(handler).run();
                 },
                 FuzzType::OtherFuzz => {
                     warn!("Unknown fuzz type!!");
