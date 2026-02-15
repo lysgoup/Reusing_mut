@@ -9,7 +9,7 @@ pub const DISABLE_INFER_SHAPE_IF_HAS_AND_OP: bool = true;
 pub const PREFER_FAST_COND: bool = true;
 
 // ************ Resources ****************
-pub const MAX_INPUT_LEN: usize = 15000;
+pub const MAX_INPUT_LEN: usize = 1000000;
 
 // branch.rs
 pub const MAP_SIZE_POW2: usize = 20;
