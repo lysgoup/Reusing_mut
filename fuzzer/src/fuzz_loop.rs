@@ -7,7 +7,6 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, RwLock,
 };
-use crate::search::apply_reusing_mutation;
 
 pub fn fuzz_loop(
     running: Arc<AtomicBool>,
@@ -70,49 +69,51 @@ pub fn fuzz_loop(
             let mut handler = SearchHandler::new(running.clone(), &mut executor, &mut cond, buf);
             match fuzz_type {
                 FuzzType::ExploreFuzz => {
-                    let solved_by_reusing = apply_reusing_mutation(&mut handler, 50);
+                    let mut reusing_fuzz = ReusingFuzz::new(handler);
+                    let solved_by_reusing = reusing_fuzz.run();
 
                     if solved_by_reusing {
                         info!("[FuzzLoop] Condition solved by reusing, skipping other mutations");
                         // ✅ 다른 mutation 건너뛰고 바로 다음 조건문으로
                     } else {
                         // 기존 mutation 계속 진행
-                        if handler.cond.is_time_expired() {
-                            handler.cond.next_state();
+                        if reusing_fuzz.handler.cond.is_time_expired() {
+                            reusing_fuzz.handler.cond.next_state();
                         }
-            
-                        if handler.cond.state.is_one_byte() {
-                            OneByteFuzz::new(handler).run();
-                        } else if handler.cond.state.is_det() {
-                            DetFuzz::new(handler).run();
+
+                        if reusing_fuzz.handler.cond.state.is_one_byte() {
+                            OneByteFuzz::new(reusing_fuzz.handler).run();
+                        } else if reusing_fuzz.handler.cond.state.is_det() {
+                            DetFuzz::new(reusing_fuzz.handler).run();
                         } else {
                             match search_method {
                                 SearchMethod::Gd => {
-                                    GdSearch::new(handler).run(&mut thread_rng());
+                                    GdSearch::new(reusing_fuzz.handler).run(&mut thread_rng());
                                 },
                                 SearchMethod::Random => {
-                                    RandomSearch::new(handler).run();
+                                    RandomSearch::new(reusing_fuzz.handler).run();
                                 },
                                 SearchMethod::Cbh => {
-                                    CbhSearch::new(handler).run();
+                                    CbhSearch::new(reusing_fuzz.handler).run();
                                 },
                                 SearchMethod::Mb => {
-                                    MbSearch::new(handler).run();
+                                    MbSearch::new(reusing_fuzz.handler).run();
                                 },
                             }
                         }
                     }
                 },
                 FuzzType::ExploitFuzz => {
-                    let solved_by_reusing = apply_reusing_mutation(&mut handler, 50);
-            
+                    let mut reusing_fuzz = ReusingFuzz::new(handler);
+                    let solved_by_reusing = reusing_fuzz.run();
+
                     if !solved_by_reusing {
-                        if handler.cond.state.is_one_byte() {
-                            let mut fz = OneByteFuzz::new(handler);
+                        if reusing_fuzz.handler.cond.state.is_one_byte() {
+                            let mut fz = OneByteFuzz::new(reusing_fuzz.handler);
                             fz.run();
                             fz.handler.cond.to_unsolvable();
                         } else {
-                            ExploitFuzz::new(handler).run();
+                            ExploitFuzz::new(reusing_fuzz.handler).run();
                         }
                     }
                 },
