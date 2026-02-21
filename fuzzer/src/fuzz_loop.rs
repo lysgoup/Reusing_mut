@@ -1,5 +1,5 @@
 use crate::{
-    branches::GlobalBranches, command::CommandOpt, cond_stmt::NextState, depot::Depot,
+    branches::GlobalBranches, command::CommandOpt, cond_stmt::{CondState, NextState}, depot::Depot,
     executor::Executor, fuzz_type::FuzzType, search::*, stats,
 };
 use rand::prelude::*;
@@ -7,7 +7,6 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, RwLock,
 };
-use crate::search::apply_reusing_mutation;
 
 pub fn fuzz_loop(
     running: Arc<AtomicBool>,
@@ -70,17 +69,15 @@ pub fn fuzz_loop(
             let mut handler = SearchHandler::new(running.clone(), &mut executor, &mut cond, buf);
             match fuzz_type {
                 FuzzType::ExploreFuzz => {
-                    let solved_by_reusing = apply_reusing_mutation(&mut handler, 50);
-
-                    if solved_by_reusing {
-                        info!("[FuzzLoop] Condition solved by reusing, skipping other mutations");
-                        // ✅ 다른 mutation 건너뛰고 바로 다음 조건문으로
+                    if handler.cond.state == CondState::OffsetAllEnd {
+                        // Run ReusingFuzz only when in OffsetAllEnd state
+                        ReusingFuzz::new(handler).run();
                     } else {
-                        // 기존 mutation 계속 진행
+                        // Run normal mutation strategies for other states
                         if handler.cond.is_time_expired() {
                             handler.cond.next_state();
                         }
-            
+
                         if handler.cond.state.is_one_byte() {
                             OneByteFuzz::new(handler).run();
                         } else if handler.cond.state.is_det() {
@@ -104,8 +101,8 @@ pub fn fuzz_loop(
                     }
                 },
                 FuzzType::ExploitFuzz => {
-                    let solved_by_reusing = apply_reusing_mutation(&mut handler, 50);
-            
+                    let (solved_by_reusing, handler) = ReusingFuzz::new(handler).run();
+
                     if !solved_by_reusing {
                         if handler.cond.state.is_one_byte() {
                             let mut fz = OneByteFuzz::new(handler);
