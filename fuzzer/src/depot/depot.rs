@@ -159,45 +159,6 @@ impl Depot {
         label_pattern_tracker::print_stats();
     }
 
-    pub fn add_entries_with_filter(&self, conds: Vec<CondStmt>, mutated_offsets: &HashSet<u32>) {
-        let mut q = match self.queue.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => {
-                warn!("Mutex poisoned! Results may be incorrect. Continuing...");
-                poisoned.into_inner()
-            },
-        };
-
-        for mut cond in conds {
-            if cond.is_desirable {
-                if let Some(v) = q.get_mut(&cond) {
-                    if !v.0.is_done() {
-                        // If existed one and our new one has two different conditions,
-                        // this indicate that it is explored.
-                        if v.0.base.condition != cond.base.condition {
-                            label_pattern_tracker::add_cond_to_pattern_map_with_filter(&cond, self, mutated_offsets);
-                            v.0.mark_as_done();
-                            q.change_priority(&cond, QPriority::done());
-                        } else {
-                            // Existed, but the new one are better
-                            // If the cond is faster than the older one, we prefer the faster,
-                            if config::PREFER_FAST_COND && v.0.speed > cond.speed {
-                                mem::swap(v.0, &mut cond);
-                                let priority = QPriority::init(cond.base.op);
-                                q.change_priority(&cond, priority);
-                            }
-                        }
-                    }
-                } else {
-                    let priority = QPriority::init(cond.base.op);
-                    label_pattern_tracker::add_cond_to_pattern_map_with_filter(&cond, self, mutated_offsets);
-                    q.push(cond, priority);
-
-                }
-            }
-        }
-        label_pattern_tracker::print_stats();
-    }
 
     pub fn update_entry(&self, cond: CondStmt) {
         let mut q = match self.queue.lock() {
@@ -214,6 +175,23 @@ impl Depot {
         }
         if cond.is_discarded() {
             q.change_priority(&cond, QPriority::done());
+        }
+    }
+
+    pub fn set_all_to_reusing(&self) {
+        use crate::cond_stmt::NextState;
+
+        let mut q = match self.queue.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                warn!("Mutex poisoned! Results may be incorrect. Continuing...");
+                poisoned.into_inner()
+            },
+        };
+
+        // 모든 entry를 순회하면서 to_reusing() 호출
+        for (cond, _) in q.iter_mut() {
+            cond.to_reusing();
         }
     }
 }

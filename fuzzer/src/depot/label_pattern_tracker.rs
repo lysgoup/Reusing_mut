@@ -3,6 +3,7 @@ use std::sync::Mutex;
 use lazy_static::lazy_static;
 use angora_common::tag::TagSeg;
 use crate::cond_stmt::CondStmt;
+use crate::mut_input::offsets::merge_offsets;
 use std::fs::File;
 use std::io::{self, Write};
 use std::path::Path;
@@ -32,11 +33,7 @@ lazy_static! {
       Mutex::new(HashMap::new());
 }
 
-pub fn extract_pattern(offsets: &Vec<TagSeg>) -> LabelPattern {
-  offsets.iter().map(|seg| seg.end - seg.begin).collect()
-}
-
-fn merge_continuous_segments(offsets: &Vec<TagSeg>) -> Vec<TagSeg> {
+pub fn merge_continuous_segments(offsets: &Vec<TagSeg>) -> Vec<TagSeg> {
   if offsets.is_empty() {
       return vec![];
   }
@@ -88,56 +85,11 @@ fn extract_value_from_label(offsets: &Vec<TagSeg>, input_buf: &Vec<u8>) -> Vec<V
   critical_values
 }
 
-fn create_record_for_offsets(
-  offsets: &Vec<TagSeg>,
-  cond: &CondStmt,
-  depot: &Depot,
-  operand_num: u8,
-) {
-  if offsets.is_empty() {
-      return;
-  }
-
-  // 병합된 세그먼트 추출
-  let merged_offsets = merge_continuous_segments(offsets);
-  let pattern = extract_pattern_merged(offsets);
-  let input_buf = depot.get_input_buf(cond.base.belong as usize);
-  let critical_values = extract_value_from_label(offsets, &input_buf);
-
-  // 1. 전체 패턴 레코드 생성 (기존 로직)
-  create_single_record(
-      &pattern,
-      offsets,
-      &critical_values,
-      cond,
-      operand_num,
-  );
-
-  // 2. 패턴이 2개 이상의 세그먼트로 구성되어 있다면 개별 세그먼트도 추가
-  if merged_offsets.len() > 1 {
-      for i in 0..merged_offsets.len() {
-          let single_segment = vec![merged_offsets[i]];
-          let single_pattern = vec![merged_offsets[i].end - merged_offsets[i].begin];
-          let single_critical_values = vec![critical_values[i].clone()];
-
-          create_single_record(
-              &single_pattern,
-              &single_segment,
-              &single_critical_values,
-              cond,
-              operand_num,
-          );
-      }
-  }
-}
-
-// 헬퍼 함수: 실제 레코드 생성 로직
-fn create_single_record(
+fn add_single_record(
   pattern: &LabelPattern,
   offsets: &Vec<TagSeg>,
   critical_values: &Vec<Vec<u8>>,
   cond: &CondStmt,
-  operand_num: u8,
 ) {
   let mut map = LABEL_PATTERN_MAP.lock().unwrap();
 
@@ -152,15 +104,6 @@ fn create_single_record(
 
   let record = CondRecord {
       cmpid: cond.base.cmpid,
-      // order: cond.base.order,
-      // context: cond.base.context,
-      // op: cond.base.op,
-      // lb1: cond.base.lb1,
-      // lb2: cond.base.lb2,
-      // condition: cond.base.condition,
-      // belong: cond.base.belong,
-      // arg1: cond.base.arg1,
-      // arg2: cond.base.arg2,
       offsets: offsets.clone(),
       critical_values: critical_values.clone(),
   };
@@ -168,28 +111,40 @@ fn create_single_record(
   map.entry(pattern.clone()).or_insert_with(Vec::new).push(record);
 }
 
-fn add_single_label_record(cond: &CondStmt, depot: &Depot) {
-    create_record_for_offsets(&cond.offsets, cond, depot, 0);
-}
-
-fn add_dual_label_records(cond: &CondStmt, depot: &Depot) {
-    if cond.offsets_opt.is_empty() {
-        return;
-    }
-
-    create_record_for_offsets(&cond.offsets, cond, depot, 1);
-    create_record_for_offsets(&cond.offsets_opt, cond, depot, 2);
-}
-
 pub fn add_cond_to_pattern_map(cond: &CondStmt, depot: &Depot) {
-  if cond.base.lb1 > 0 && cond.base.lb2 == 0 {
-      add_single_label_record(cond, depot);
+  if cond.offsets.is_empty() {
+      return;
   }
-  else if cond.base.lb1 == 0 && cond.base.lb2 > 0 {
-      add_single_label_record(cond, depot);
-  }
-  else if cond.base.lb1 > 0 && cond.base.lb2 > 0 {
-      add_dual_label_records(cond, depot);
+
+  // offsets_opt가 존재하면 offsets과 합쳐서 새로운 offsets 생성
+  let combined_offsets = merge_offsets(&cond.offsets, &cond.offsets_opt);
+
+  // 병합된 세그먼트 추출
+  let merged_offsets = merge_continuous_segments(&combined_offsets);
+  let pattern = extract_pattern_merged(&combined_offsets);
+  let input_buf = depot.get_input_buf(cond.base.belong as usize);
+  let critical_values = extract_value_from_label(&combined_offsets, &input_buf);
+
+  // 1. 전체 패턴 레코드 생성
+  add_single_record(
+      &pattern,
+      &combined_offsets,
+      &critical_values,
+      cond,
+  );
+
+  // 2. 각 세그먼트별 레코드 생성
+  for i in 0..merged_offsets.len() {
+      let single_segment = vec![merged_offsets[i]];
+      let single_pattern = vec![merged_offsets[i].end - merged_offsets[i].begin];
+      let single_critical_values = vec![critical_values[i].clone()];
+
+      add_single_record(
+          &single_pattern,
+          &single_segment,
+          &single_critical_values,
+          cond,
+      );
   }
 }
 
@@ -205,19 +160,6 @@ pub fn print_stats() {
   // info!("[LabelPattern] Total patterns: {}, Total records: {}", num_patterns, num_records);
 }
 
-fn check_continuous(offsets: &Vec<TagSeg>) -> bool {
-  if offsets.len() <= 1 {
-      return true;
-  }
-
-  for i in 0..offsets.len()-1 {
-      if offsets[i].end != offsets[i+1].begin {
-          return false;
-      }
-  }
-  true
-}
-
 pub fn save_to_text(path: &Path) -> io::Result<()> {
   let map = LABEL_PATTERN_MAP.lock().unwrap();
   let mut file = File::create(path)?;
@@ -229,7 +171,7 @@ pub fn save_to_text(path: &Path) -> io::Result<()> {
   writeln!(file)?;
 
   let mut sorted_patterns: Vec<_> = map.iter().collect();
-  sorted_patterns.sort_by_key(|(pattern, _)| pattern.clone());
+  sorted_patterns.sort_by_key(|(pattern, _)| (*pattern).clone());
 
   for (pattern, records) in sorted_patterns {
       writeln!(file, "Pattern: {:?} (size: {})", pattern, pattern.iter().sum::<u32>())?;
@@ -258,57 +200,17 @@ pub fn get_next_records(
     let records = map.get(pattern)?;
 
     let total = records.len();
-    let start = cond.reusing_record_index;
+    let start = cond.reusing_full_index;
 
     if start >= total {
         return None;
     }
 
     let end = (start + iterations).min(total);
-    cond.reusing_record_index = end;
+    cond.reusing_full_index = end;
 
     records[start..end].to_vec()
   };
 
   Some(selected)
-}
-
-// Check if any taint offset overlaps with mutated offsets
-fn offsets_overlap(taint_offsets: &Vec<TagSeg>, mutated_offsets: &HashSet<u32>) -> bool {
-  for seg in taint_offsets {
-    for offset in seg.begin..seg.end {
-      if mutated_offsets.contains(&offset) {
-        return true;
-      }
-    }
-  }
-  false
-}
-
-// Add cond to pattern map only if its offsets overlap with mutated offsets
-pub fn add_cond_to_pattern_map_with_filter(
-  cond: &CondStmt,
-  depot: &Depot,
-  mutated_offsets: &HashSet<u32>
-) {
-  // If mutated_offsets is empty, add without filtering (for initial seeds or non-mutation cases)
-  if mutated_offsets.is_empty() {
-    debug!("[LabelPattern] mutated_offsets is empty, adding without filter");
-    add_cond_to_pattern_map(cond, depot);
-    return;
-  }
-
-  // Check if this cond's offsets overlap with mutated offsets
-  let has_overlap = offsets_overlap(&cond.offsets, mutated_offsets) ||
-                    (!cond.offsets_opt.is_empty() && offsets_overlap(&cond.offsets_opt, mutated_offsets));
-
-  if !has_overlap {
-    debug!("[LabelPattern] No overlap - cond offsets: {:?}, mutated: {:?}",
-           cond.offsets, mutated_offsets);
-    return;
-  }
-
-  debug!("[LabelPattern] Overlap found - adding to pattern map");
-  // If overlaps, add to pattern map
-  add_cond_to_pattern_map(cond, depot);
 }

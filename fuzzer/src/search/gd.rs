@@ -57,12 +57,6 @@ impl<'a> GdSearch<'a> {
             self.handler.cond
         );
 
-        // Record mutated offsets - clone offsets first to avoid borrow conflict
-        let offsets = self.handler.cond.offsets.clone();
-        for seg in &offsets {
-            self.handler.record_mutated_range(seg.begin as usize, seg.end as usize);
-        }
-
         let mut f0 = if !self.handler.cond.is_first_time() {
             self.reload_input(&mut input)
         } else {

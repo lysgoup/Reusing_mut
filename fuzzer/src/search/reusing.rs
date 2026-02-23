@@ -1,4 +1,4 @@
-use crate::depot::{LABEL_PATTERN_MAP, extract_pattern_merged, CondRecord, get_next_records};
+use crate::depot::{LABEL_PATTERN_MAP, extract_pattern_merged, CondRecord, get_next_records, merge_continuous_segments};
 use crate::search::SearchHandler;
 use rand::seq::SliceRandom;
 use angora_common::tag::TagSeg;
@@ -13,19 +13,12 @@ impl<'a> ReusingFuzz<'a> {
         Self { handler }
     }
 
-    /// Reusing mutation을 실행하고 (성공 여부, handler)를 반환
-    pub fn run(mut self) -> (bool, SearchHandler<'a>) {
-        let solved = self.apply_reusing_mutation(50);
-        (solved, self.handler)
+    /// Reusing mutation을 실행
+    pub fn run(mut self) {
+        self.apply_reusing_mutation();
     }
 
-    /// Reusing mutation을 실행하고 (성공 여부, handler)를 반환 (iterations 지정 가능)
-    pub fn run_with_iterations(mut self, iterations: usize) -> (bool, SearchHandler<'a>) {
-        let solved = self.apply_reusing_mutation(iterations);
-        (solved, self.handler)
-    }
-
-    fn apply_reusing_mutation(&mut self, iterations: usize) -> bool {
+    fn apply_reusing_mutation(&mut self) -> bool {
         // 0. 이미 해결된 조건이면 스킵
         if self.handler.cond.is_done() {
             return false;
@@ -41,46 +34,86 @@ impl<'a> ReusingFuzz<'a> {
             return false;
         }
 
-        // 3. reusing 진행
-        let mut execution_count = 0;
-        let map = LABEL_PATTERN_MAP.lock().unwrap();
-        let total_records = if let Some(records) = map.get(&pattern) {
-            records.len()
-        } else {
-            0
-        };
-        drop(map);
+        // 3. 병합된 오프셋 미리 계산
+        let merged_offsets = merge_continuous_segments(&self.handler.cond.offsets);
 
-        if self.handler.cond.reusing_record_index >= total_records {
-            info!("[Reusing] Pattern {:?}: All records already used (index={}/{}), skipping original reusing",
-                  pattern, self.handler.cond.reusing_record_index, total_records);
-        } else {
-            // ===== 1단계: 동일 패턴 시도 =====
-            if let Some(selected_records) = get_next_records(&mut self.handler.cond, &pattern, iterations) {
-                let merged_offsets = merge_continuous_segments(&self.handler.cond.offsets);
+        // 4. 모든 저장된 레코드를 다 사용 (Stage 1: 전체 패턴)
+        if let Some(selected_records) = get_next_records(&mut self.handler.cond, &pattern, usize::MAX) {
+            for record in selected_records.iter() {
+                if self.handler.is_stopped_or_skip() {
+                    break;
+                }
 
-                for (i, record) in selected_records.iter().enumerate() {
-                    if self.handler.is_stopped_or_skip() {
-                        break;
-                    }
+                if self.insert_critical_value_with_merged(&record, &merged_offsets) {
+                    let buf = self.handler.buf.clone();
+                    self.handler.execute(&buf);
+                }
 
-                    if self.insert_critical_value_with_merged(&record, &merged_offsets) {
-                        let buf = self.handler.buf.clone();
-                        self.handler.execute(&buf);
-                        execution_count += 1;
-                    }
+                if self.handler.cond.is_done() {
+                    break;
                 }
             }
         }
 
-        // ===== 2단계: 남은 횟수를 개별 세그먼트 조합으로 채우기 =====
-        if execution_count < iterations && pattern.len() >= 2 {
-            let remaining = iterations - execution_count;
-            let combined_count = self.try_combined_segments(&pattern, remaining);
-            execution_count += combined_count;
+        // 5. Stage 2: 세그먼트 조합 mutation (세그먼트가 2개 이상일 때만)
+        if merged_offsets.len() >= 2 && !self.handler.cond.is_done() {
+            for seg_idx in 0..merged_offsets.len() {
+                if self.handler.is_stopped_or_skip() {
+                    break;
+                }
+
+                let seg = merged_offsets[seg_idx];
+                let segment_size = seg.end - seg.begin;
+                let single_pattern = vec![segment_size];
+
+                // LABEL_PATTERN_MAP에서 해당 세그먼트 크기의 레코드들 가져오기
+                let records = {
+                    let map = LABEL_PATTERN_MAP.lock().unwrap();
+                    map.get(&single_pattern).cloned().unwrap_or_default()
+                };
+
+                let start_index = self.handler.cond.reusing_segment_index[seg_idx];
+
+                // start_index부터 시작해서 남은 레코드들 처리
+                for (rec_idx, record) in records.iter().enumerate().skip(start_index) {
+                    if self.handler.is_stopped_or_skip() {
+                        break;
+                    }
+
+                    // 이 세그먼트의 critical value만 사용
+                    if !record.critical_values.is_empty() {
+                        let value = &record.critical_values[0];
+                        let begin = seg.begin as usize;
+                        let end = seg.end as usize;
+
+                        // 버퍼 크기 조정
+                        if end > self.handler.buf.len() {
+                            self.handler.buf.resize(end, 0);
+                        }
+
+                        // 이 세그먼트에만 critical value 복사
+                        let copy_len = value.len().min(end - begin);
+                        self.handler.buf[begin..begin + copy_len].copy_from_slice(&value[..copy_len]);
+
+                        let buf = self.handler.buf.clone();
+                        self.handler.execute(&buf);
+                    }
+
+                    if self.handler.cond.is_done() {
+                        break;
+                    }
+
+                    // 이 세그먼트의 처리 위치 업데이트
+                    self.handler.cond.reusing_segment_index[seg_idx] = rec_idx + 1;
+                }
+
+                if self.handler.cond.is_done() {
+                    break;
+                }
+            }
         }
 
-        // 4. reusing 종료 후, local_stats의 증가량을 REUSING_STATS로 복사
+        // 7. reusing 종료 후, local_stats의 증가량을 REUSING_STATS로 복사
         {
             let mut reusing_stats = REUSING_STATS.lock().unwrap();
 
@@ -97,98 +130,15 @@ impl<'a> ReusingFuzz<'a> {
             reusing_stats.num_crashes.0 += crashes_delta;
         }
 
-        // 5. local_stats를 백업으로 복원
+        // 8. local_stats를 백업으로 복원
         self.handler.executor.local_stats.restore(&snapshot);
         self.handler.buf = buf_backup;
 
-        // 6. 조건문이 해결되었는지 확인
+        // 9. 조건문이 해결되었는지 확인
         if self.handler.cond.is_done() {
             return true;
         }
         return false;
-    }
-
-    fn try_combined_segments(&mut self, pattern: &Vec<u32>, iterations: usize) -> usize {
-        // 각 세그먼트별로 개별 패턴 레코드 수집
-        let segment_pools: Vec<Vec<Vec<u8>>> = {
-            let map = LABEL_PATTERN_MAP.lock().unwrap();
-
-            pattern.iter().map(|&segment_size| {
-                let single_pattern = vec![segment_size];
-                map.get(&single_pattern)
-                    .map(|records| {
-                        records.iter()
-                            .filter_map(|r| r.critical_values.first().cloned())
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            }).collect()
-        };
-
-        // 모든 세그먼트에 후보가 있는지 확인
-        if segment_pools.iter().any(|pool| pool.is_empty()) {
-            warn!("[Reusing] Cannot combine: some segment pools are empty");
-            return 0;
-        }
-
-        // ✅ 병합 오프셋을 루프 밖에서 1회만 계산
-        let merged_offsets = merge_continuous_segments(&self.handler.cond.offsets);
-
-        if merged_offsets.len() != pattern.len() {
-            warn!("[Reusing] Merged offsets mismatch: offsets={}, pattern={}",
-                  merged_offsets.len(), pattern.len());
-            return 0;
-        }
-
-        // ✅ 최대 버퍼 크기 미리 계산 및 할당
-        let max_end = merged_offsets.iter()
-            .map(|s| s.end as usize)
-            .max()
-            .unwrap_or(0);
-
-        if max_end > self.handler.buf.len() {
-            self.handler.buf.resize(max_end, 0);
-        }
-
-        let mut rng = rand::thread_rng();
-        let mut execution_count = 0;
-
-        // ✅ Vec 재사용 (매번 할당 X)
-        let mut combined_values: Vec<Vec<u8>> = Vec::with_capacity(pattern.len());
-
-        for iter in 0..iterations {
-            if self.handler.is_stopped_or_skip() {
-                warn!("[Reusing] Stopped early at combined iteration {}/{}", iter, iterations);
-                break;
-            }
-
-            combined_values.clear();
-
-            // 각 세그먼트별로 랜덤 선택
-            for pool in &segment_pools {
-                if let Some(record) = pool.choose(&mut rng) {
-                    combined_values.push(record.clone());
-                }
-            }
-
-            // 조합된 값으로 mutation
-            if combined_values.len() == merged_offsets.len() {
-                // 값 삽입
-                for (seg, value) in merged_offsets.iter().zip(combined_values.iter()) {
-                    let begin = seg.begin as usize;
-                    let end = seg.end as usize;
-                    let copy_len = value.len().min(end - begin);
-
-                    self.handler.buf[begin..begin + copy_len]
-                        .copy_from_slice(&value[..copy_len]);
-                }
-
-                let buf = self.handler.buf.clone();
-                self.handler.execute(&buf);
-                execution_count += 1;
-            }
-        }
-        execution_count
     }
 
     fn insert_critical_value_with_merged(
@@ -218,141 +168,4 @@ impl<'a> ReusingFuzz<'a> {
 
         true
     }
-}
-
-fn try_combined_segments(handler: &mut SearchHandler, pattern: &Vec<u32>, iterations: usize) -> usize {
-    // 각 세그먼트별로 개별 패턴 레코드 수집
-    let segment_pools: Vec<Vec<Vec<u8>>> = {
-        let map = LABEL_PATTERN_MAP.lock().unwrap();
-
-        pattern.iter().map(|&segment_size| {
-            let single_pattern = vec![segment_size];
-            map.get(&single_pattern)
-                .map(|records| {
-                    records.iter()
-                        .filter_map(|r| r.critical_values.first().cloned())
-                        .collect()
-                })
-                .unwrap_or_default()
-        }).collect()
-    };
-
-    // 모든 세그먼트에 후보가 있는지 확인
-    if segment_pools.iter().any(|pool| pool.is_empty()) {
-        warn!("[Reusing] Cannot combine: some segment pools are empty");
-        return 0;
-    }
-    info!("check!!!!");
-
-    // info!("[Reusing] All segment pools available, starting combined mutations");
-    // ✅ 병합 오프셋을 루프 밖에서 1회만 계산
-    let merged_offsets = merge_continuous_segments(&handler.cond.offsets);
-
-    if merged_offsets.len() != pattern.len() {
-        warn!("[Reusing] Merged offsets mismatch: offsets={}, pattern={}",
-              merged_offsets.len(), pattern.len());
-        return 0;
-    }
-
-    // ✅ 최대 버퍼 크기 미리 계산 및 할당
-    let max_end = merged_offsets.iter()
-        .map(|s| s.end as usize)
-        .max()
-        .unwrap_or(0);
-
-    if max_end > handler.buf.len() {
-        handler.buf.resize(max_end, 0);
-    }
-
-    let mut rng = rand::thread_rng();
-    let mut execution_count = 0;
-
-    // ✅ Vec 재사용 (매번 할당 X)
-    let mut combined_values: Vec<Vec<u8>> = Vec::with_capacity(pattern.len());
-
-    for iter in 0..iterations {
-        if handler.is_stopped_or_skip() {
-            warn!("[Reusing] Stopped early at combined iteration {}/{}", iter, iterations);
-            break;
-        }
-
-        combined_values.clear();
-
-        // 각 세그먼트별로 랜덤 선택
-        for pool in &segment_pools {
-            if let Some(record) = pool.choose(&mut rng) {
-                combined_values.push(record.clone());
-            }
-        }
-
-
-
-        // 조합된 값으로 mutation
-        if combined_values.len() == merged_offsets.len() {
-            // 값 삽입
-            for (seg, value) in merged_offsets.iter().zip(combined_values.iter()) {
-                let begin = seg.begin as usize;
-                let end = seg.end as usize;
-                let copy_len = value.len().min(end - begin);
-
-                handler.buf[begin..begin + copy_len]
-                    .copy_from_slice(&value[..copy_len]);
-            }
-
-            let buf = handler.buf.clone();
-            handler.execute(&buf);
-            execution_count += 1;
-        }
-    }
-    execution_count
-}
-
-fn insert_critical_value_with_merged(
-    handler: &mut SearchHandler,
-    record: &CondRecord,
-    merged_offsets: &[TagSeg],
-) -> bool {
-    let critical_values = &record.critical_values;
-
-    if merged_offsets.len() != critical_values.len() {
-        return false;
-    }
-
-    // 필요한 최대 크기를 한 번에 계산
-    let max_end = merged_offsets.iter().map(|s| s.end as usize).max().unwrap_or(0);
-    if max_end > handler.buf.len() {
-        handler.buf.resize(max_end, 0);
-    }
-
-    for (seg, value) in merged_offsets.iter().zip(critical_values.iter()) {
-        let begin = seg.begin as usize;
-        let end = seg.end as usize;
-        let copy_len = value.len().min(end - begin);
-
-        handler.buf[begin..begin + copy_len].copy_from_slice(&value[..copy_len]);
-    }
-
-    true
-}
-
-fn merge_continuous_segments(offsets: &Vec<TagSeg>) -> Vec<TagSeg> {
-    if offsets.is_empty() {
-        return vec![];
-    }
-
-    let mut merged = Vec::new();
-    let mut current = offsets[0];
-
-    for i in 1..offsets.len() {
-        let next = offsets[i];
-        // if current.end == next.begin && current.sign == next.sign {
-        if current.end == next.begin {
-            current.end = next.end;
-        } else {
-            merged.push(current);
-            current = next;
-        }
-    }
-    merged.push(current);
-    merged
 }

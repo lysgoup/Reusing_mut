@@ -65,11 +65,7 @@ impl<'a> AFLFuzz<'a> {
                 break;
             }
             let mut buf = self.handler.buf.clone();
-            let mutated_offsets = self.havoc_flip(&mut buf, max_stacking, choice_range);
-            self.handler.clear_mutated_offsets();
-            for offset in mutated_offsets {
-                self.handler.record_mutated_offset(offset);
-            }
+            let _mutated_offsets = self.havoc_flip(&mut buf, max_stacking, choice_range);
             self.handler.execute(&buf);
         }
     }
@@ -114,20 +110,6 @@ impl<'a> AFLFuzz<'a> {
         let buf1 = self.handler.buf.clone();
         let buf2 = self.handler.executor.random_input_buf();
         if let Some(new_buf) = Self::splice_two_vec(&buf1, &buf2) {
-            // Record mutated offsets (find difference between buf1 and new_buf)
-            self.handler.clear_mutated_offsets();
-            let len = std::cmp::min(buf1.len(), new_buf.len());
-            for i in 0..len {
-                if buf1[i] != new_buf[i] {
-                    self.handler.record_mutated_offset(i as u32);
-                }
-            }
-            // If sizes differ, record the different part
-            if new_buf.len() > buf1.len() {
-                for i in buf1.len()..new_buf.len() {
-                    self.handler.record_mutated_offset(i as u32);
-                }
-            }
             self.handler.execute(&new_buf);
             true
         } else {
@@ -243,11 +225,6 @@ impl<'a> AFLFuzz<'a> {
             let prev_len = buf.len();
             buf.append(&mut v);
             if buf.len() < config::MAX_INPUT_LEN {
-                // Record mutated offsets (appended bytes)
-                self.handler.clear_mutated_offsets();
-                for i in prev_len..buf.len() {
-                    self.handler.record_mutated_offset(i as u32);
-                }
                 self.handler.execute(&buf);
             } else {
                 break;
@@ -271,11 +248,6 @@ impl<'a> AFLFuzz<'a> {
             buf.append(&mut v);
             step = step * 2;
             if buf.len() < config::MAX_INPUT_LEN {
-                // Record mutated offsets (appended bytes)
-                self.handler.clear_mutated_offsets();
-                for i in prev_len..buf.len() {
-                    self.handler.record_mutated_offset(i as u32);
-                }
                 self.handler.execute(&buf);
             } else {
                 break;

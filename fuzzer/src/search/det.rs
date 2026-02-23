@@ -24,11 +24,6 @@ impl<'a> DetFuzz<'a> {
     }
 
     pub fn run(&mut self) {
-        // Record mutated offsets
-        let offsets = self.handler.cond.offsets.clone();
-        for seg in &offsets {
-            self.handler.record_mutated_range(seg.begin as usize, seg.end as usize);
-        }
         self.bitflip1();
     }
 }

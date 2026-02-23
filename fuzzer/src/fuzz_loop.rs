@@ -66,18 +66,17 @@ pub fn fuzz_loop(
 
         {
             let fuzz_type = cond.get_fuzz_type();
-            let mut handler = SearchHandler::new(running.clone(), &mut executor, &mut cond, buf);
+            let handler = SearchHandler::new(running.clone(), &mut executor, &mut cond, buf);
             match fuzz_type {
                 FuzzType::ExploreFuzz => {
-                    if handler.cond.state == CondState::OffsetAllEnd {
-                        // Run ReusingFuzz only when in OffsetAllEnd state
+                    if handler.cond.state == CondState::Reusing {
+                        // Run ReusingFuzz only when in Reusing state
                         ReusingFuzz::new(handler).run();
                     } else {
                         // Run normal mutation strategies for other states
                         if handler.cond.is_time_expired() {
                             handler.cond.next_state();
                         }
-
                         if handler.cond.state.is_one_byte() {
                             OneByteFuzz::new(handler).run();
                         } else if handler.cond.state.is_det() {
@@ -101,16 +100,12 @@ pub fn fuzz_loop(
                     }
                 },
                 FuzzType::ExploitFuzz => {
-                    let (solved_by_reusing, handler) = ReusingFuzz::new(handler).run();
-
-                    if !solved_by_reusing {
-                        if handler.cond.state.is_one_byte() {
-                            let mut fz = OneByteFuzz::new(handler);
-                            fz.run();
-                            fz.handler.cond.to_unsolvable();
-                        } else {
-                            ExploitFuzz::new(handler).run();
-                        }
+                    if handler.cond.state.is_one_byte() {
+                        let mut fz = OneByteFuzz::new(handler);
+                        fz.run();
+                        fz.handler.cond.to_unsolvable();
+                    } else {
+                        ExploitFuzz::new(handler).run();
                     }
                 },
                 FuzzType::AFLFuzz => {

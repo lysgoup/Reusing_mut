@@ -1,4 +1,4 @@
-use crate::{cond_stmt::CondStmt, mut_input::offsets::*};
+use crate::{cond_stmt::CondStmt, mut_input::offsets::*, depot::merge_continuous_segments};
 use angora_common::{config, defs};
 use serde_derive::{Deserialize, Serialize};
 use std;
@@ -13,6 +13,7 @@ pub enum CondState {
     OneByte,
     Unsolvable,
     Deterministic,
+    Reusing,
     Timeout,
 }
 
@@ -71,6 +72,7 @@ pub trait NextState {
     fn to_offsets_all_end(&mut self);
     fn to_det(&mut self);
     fn to_unsolvable(&mut self);
+    fn to_reusing(&mut self);
     fn to_timeout(&mut self);
 }
 
@@ -88,7 +90,7 @@ impl NextState for CondStmt {
                 if self.offsets_opt.len() > 0 {
                     self.to_offsets_opt();
                 } else {
-                    self.to_unsolvable();
+                    self.to_reusing();
                 }
             },
             CondState::OffsetOpt => {
@@ -98,7 +100,7 @@ impl NextState for CondStmt {
                 self.to_det();
             },
             CondState::Deterministic => {
-                self.to_offsets_all_end();
+                self.to_reusing();
             },
             _ => {},
         }
@@ -112,6 +114,7 @@ impl NextState for CondStmt {
     fn to_offsets_all(&mut self) {
         self.state = CondState::OffsetAll;
         self.offsets = merge_offsets(&self.offsets, &self.offsets_opt);
+        self.offsets_opt.clear();  // Clear after merge
     }
 
     fn to_det(&mut self) {
@@ -126,6 +129,20 @@ impl NextState for CondStmt {
     fn to_unsolvable(&mut self) {
         debug!("to unsovable");
         self.state = CondState::Unsolvable;
+    }
+
+    fn to_reusing(&mut self) {
+        debug!("to reusing");
+        // offsets_opt가 있으면 merge
+        if self.offsets_opt.len() > 0 {
+            self.offsets = merge_offsets(&self.offsets, &self.offsets_opt);
+        }
+
+        // 세그먼트 개수만큼 reusing_segment_index 초기화
+        let merged_segments = merge_continuous_segments(&self.offsets);
+        self.reusing_segment_index = vec![0; merged_segments.len()];
+
+        self.state = CondState::Reusing;
     }
 
     fn to_timeout(&mut self) {

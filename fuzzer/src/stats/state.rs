@@ -30,6 +30,7 @@ pub struct StateStats {
     normal_end: PendingCounter,
     det: PendingCounter,
     one_byte: PendingCounter,
+    reusing: PendingCounter,
     unsolvable: PendingCounter,
     timeout: PendingCounter,
 }
@@ -46,6 +47,9 @@ impl StateStats {
             },
             CondState::OneByte => {
                 self.one_byte.count(is_done);
+            },
+            CondState::Reusing => {
+                self.reusing.count(is_done);
             },
             CondState::Unsolvable => {
                 self.unsolvable.count(is_done);
@@ -65,8 +69,8 @@ impl fmt::Display for StateStats {
         write!(
             f,
             r#"           |    NORMAL: {},   NORMAL_END: {},   ONE_BYTE: {}
-           |       DET: {},    TIMEOUT: {},     UNSOLVABLE: {}"#,
-            self.normal, self.normal_end, self.one_byte, self.det, self.timeout, self.unsolvable,
+           |       DET: {},    REUSING: {},    TIMEOUT: {},     UNSOLVABLE: {}"#,
+            self.normal, self.normal_end, self.one_byte, self.det, self.reusing, self.timeout, self.unsolvable,
         )
     }
 }

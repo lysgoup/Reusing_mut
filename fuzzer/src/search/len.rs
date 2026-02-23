@@ -43,43 +43,29 @@ impl<'a> LenFuzz<'a> {
                     let prev_len = buf.len();
                     buf.append(&mut v);
                     // Record mutated offsets (appended bytes)
-                    self.handler.clear_mutated_offsets();
-                    for i in prev_len..buf.len() {
-                        self.handler.record_mutated_offset(i as u32);
-                    }
                     self.handler.execute(&buf);
                     // some special chars: NULL, LF, CR, SPACE
                     let special_chars = vec![0, 10, 13, 32];
                     for c in special_chars {
                         let idx = buf.len();
                         buf.push(c);
-                        self.handler.clear_mutated_offsets();
-                        self.handler.record_mutated_offset(idx as u32);
                         self.handler.execute(&buf);
                         buf.pop();
                     }
                     // len == X
                     let popped_idx = buf.len() - 1;
                     buf.pop();
-                    self.handler.clear_mutated_offsets();
-                    self.handler.record_mutated_offset(popped_idx as u32);
                     self.handler.execute(&buf);
                 }
                 if buf_len > extended_len {
                     let truncate_start = buf_len - extended_len;
                     buf.truncate(truncate_start);
-                    // len == X - record deleted region
-                    self.handler.clear_mutated_offsets();
-                    for i in truncate_start..buf_len {
-                        self.handler.record_mutated_offset(i as u32);
-                    }
+                    // len == X
                     self.handler.execute(&buf);
                     // len < X
                     if buf_len > extended_len + 1 {
                         let popped_idx = buf.len() - 1;
                         buf.pop();
-                        self.handler.clear_mutated_offsets();
-                        self.handler.record_mutated_offset(popped_idx as u32);
                         self.handler.execute(&buf);
                     }
                 }

@@ -19,7 +19,8 @@ pub struct CondStmt {
     pub num_minimal_optima: usize,
     pub linear: bool,
 
-    pub reusing_record_index: usize,
+    pub reusing_full_index: usize,
+    pub reusing_segment_index: Vec<usize>,
 }
 
 impl PartialEq for CondStmt {
@@ -53,7 +54,8 @@ impl CondStmt {
             state: CondState::default(),
             num_minimal_optima: 0,
             linear: false,
-            reusing_record_index: 0,
+            reusing_full_index: 0,
+            reusing_segment_index: Vec::new(),
         }
     }
 
@@ -97,6 +99,7 @@ impl CondStmt {
         self.offsets = vec![];
         self.offsets_opt = vec![];
         self.variables = vec![];
+        self.reusing_segment_index = Vec::new();
     }
 
     pub fn is_discarded(&self) -> bool {
