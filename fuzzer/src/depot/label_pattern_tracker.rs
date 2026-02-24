@@ -91,7 +91,15 @@ fn add_single_record(
   critical_values: &Vec<Vec<u8>>,
   cond: &CondStmt,
 ) {
-  let mut map = LABEL_PATTERN_MAP.lock().unwrap();
+  let mut map = match LABEL_PATTERN_MAP.lock() {
+    Ok(guard) => guard,
+    Err(poisoned) => {
+      error!("❌ CRITICAL: LABEL_PATTERN_MAP poisoned in add_single_record!");
+      error!("This means a thread panicked while holding the lock.");
+      error!("Pattern: {:?}, cond_cmpid: {}", pattern, cond.base.cmpid);
+      return;
+    }
+  };
 
   // 중복 체크
   if let Some(existing_records) = map.get(pattern) {
@@ -149,7 +157,13 @@ pub fn add_cond_to_pattern_map(cond: &CondStmt, depot: &Depot) {
 }
 
 pub fn get_stats() -> (usize, usize) {
-  let map = LABEL_PATTERN_MAP.lock().unwrap();
+  let map = match LABEL_PATTERN_MAP.lock() {
+    Ok(guard) => guard,
+    Err(poisoned) => {
+      error!("❌ CRITICAL: LABEL_PATTERN_MAP poisoned in get_stats!");
+      poisoned.into_inner()
+    }
+  };
   let num_patterns = map.len();
   let num_records: usize = map.values().map(|v| v.len()).sum();
   (num_patterns, num_records)
@@ -161,7 +175,13 @@ pub fn print_stats() {
 }
 
 pub fn save_to_text(path: &Path) -> io::Result<()> {
-  let map = LABEL_PATTERN_MAP.lock().unwrap();
+  let map = match LABEL_PATTERN_MAP.lock() {
+    Ok(guard) => guard,
+    Err(poisoned) => {
+      error!("❌ CRITICAL: LABEL_PATTERN_MAP poisoned in save_to_text!");
+      return Ok(());
+    }
+  };
   let mut file = File::create(path)?;
 
   writeln!(file, "# Angora Label Pattern Map")?;
@@ -196,17 +216,30 @@ pub fn get_next_records(
   iterations: usize
 ) -> Option<Vec<CondRecord>> {
   let selected = {
-    let map = LABEL_PATTERN_MAP.lock().unwrap();
+    let map = match LABEL_PATTERN_MAP.lock() {
+      Ok(guard) => guard,
+      Err(poisoned) => {
+        error!("❌ CRITICAL: LABEL_PATTERN_MAP poisoned in get_next_records!");
+        poisoned.into_inner()
+      }
+    };
     let records = map.get(pattern)?;
 
     let total = records.len();
-    let start = cond.reusing_full_index;
+    let mut start = cond.reusing_full_index;
 
+    // Safety check: reusing_full_index가 total을 초과하지 않도록 제한
     if start >= total {
         return None;
     }
 
     let end = (start + iterations).min(total);
+
+    // Safety: end가 start보다 작거나 같은 경우 방지
+    if end <= start {
+        return None;
+    }
+
     cond.reusing_full_index = end;
 
     records[start..end].to_vec()
