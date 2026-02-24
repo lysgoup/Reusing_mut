@@ -69,9 +69,6 @@ pub fn fuzz_main(
 
     depot::sync_depot(&mut executor, running.clone(), &depot.dirs.seeds_dir);
 
-    // Dry-run 후, 모든 CondStmt의 state를 Reusing으로 설정
-    depot.set_all_to_reusing();
-
     if depot.empty() {
         error!("Failed to find any branches during dry run.");
         error!("Please ensure that the binary has been instrumented and/or input directory is populated.");

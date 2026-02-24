@@ -178,20 +178,4 @@ impl Depot {
         }
     }
 
-    pub fn set_all_to_reusing(&self) {
-        use crate::cond_stmt::NextState;
-
-        let mut q = match self.queue.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => {
-                warn!("Mutex poisoned! Results may be incorrect. Continuing...");
-                poisoned.into_inner()
-            },
-        };
-
-        // 모든 entry를 순회하면서 to_reusing() 호출
-        for (cond, _) in q.iter_mut() {
-            cond.to_reusing();
-        }
-    }
 }

@@ -33,6 +33,7 @@ pub struct Executor {
     pub has_new_path: bool,
     pub global_stats: Arc<RwLock<stats::ChartStats>>,
     pub local_stats: stats::LocalStats,
+    pub is_dry_run: bool,
 }
 
 impl Executor {
@@ -95,6 +96,7 @@ impl Executor {
             has_new_path: false,
             global_stats,
             local_stats: Default::default(),
+            is_dry_run: false,
         }
     }
 
@@ -246,7 +248,16 @@ impl Executor {
                 }
                 let crash_or_tmout = self.try_unlimited_memory(buf, cmpid);
                 if !crash_or_tmout {
-                    let cond_stmts = self.track(id, buf, speed);
+                    let mut cond_stmts = self.track(id, buf, speed);
+
+                    // Dry-run 중에 발견된 CondStmt들을 Reusing 상태로 설정
+                    if self.is_dry_run {
+                        use crate::cond_stmt::NextState;
+                        for cond in &mut cond_stmts {
+                            cond.to_reusing();
+                        }
+                    }
+
                     if cond_stmts.len() > 0 {
                         self.depot.add_entries(cond_stmts);
                         if self.cmd.enable_afl {
@@ -269,9 +280,11 @@ impl Executor {
     }
 
     pub fn run_sync(&mut self, buf: &Vec<u8>) {
+        self.is_dry_run = true;
         self.run_init();
         let status = self.run_inner(buf);
         self.do_if_has_new(buf, status, false, 0);
+        self.is_dry_run = false;
     }
 
     fn run_init(&mut self) {
