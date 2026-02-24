@@ -68,7 +68,13 @@ impl<'a> ReusingFuzz<'a> {
 
                 // LABEL_PATTERN_MAP에서 해당 세그먼트 크기의 레코드들 가져오기
                 let records = {
-                    let map = LABEL_PATTERN_MAP.lock().unwrap();
+                    let map = match LABEL_PATTERN_MAP.lock() {
+                        Ok(guard) => guard,
+                        Err(poisoned) => {
+                            error!("❌ CRITICAL: [Reusing] LABEL_PATTERN_MAP poisoned in segment combination!");
+                            poisoned.into_inner()
+                        }
+                    };
                     map.get(&single_pattern).cloned().unwrap_or_default()
                 };
 
