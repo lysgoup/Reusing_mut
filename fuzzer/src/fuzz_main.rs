@@ -79,6 +79,9 @@ pub fn fuzz_main(
         panic!();
     }
 
+    info!("Dry-run completed. Exiting for testing.");
+    return;
+
     let (handles, child_count) = init_cpus_and_run_fuzzing_threads(
         bind,
         num_jobs,
