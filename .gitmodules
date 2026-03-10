@@ -4,6 +4,3 @@
 [submodule "Reusing-unibench_build"]
 	path = Reusing-unibench_build
 	url = https://github.com/lysgoup/Reusing-unibench_build.git
-[submodule "Angora"]
-	path = Angora
-	url = https://github.com/AngoraFuzzer/Angora.git
