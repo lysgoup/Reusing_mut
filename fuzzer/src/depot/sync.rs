@@ -14,7 +14,15 @@ use std::{
 pub fn sync_depot(executor: &mut Executor, running: Arc<AtomicBool>, dir: &Path) {
     executor.local_stats.clear();
     let seed_dir = dir.read_dir().expect("read_dir call failed");
-    for entry in seed_dir {
+    let mut entries: Vec<_> = seed_dir.collect();
+    entries.sort_by_key(|e| {
+        if let Ok(entry) = e {
+            entry.file_name()
+        } else {
+            std::ffi::OsString::new()
+        }
+    });
+    for entry in entries {
         if let Ok(entry) = entry {
             if !running.load(Ordering::SeqCst) {
                 break;
@@ -24,6 +32,7 @@ pub fn sync_depot(executor: &mut Executor, running: Arc<AtomicBool>, dir: &Path)
                 let file_len =
                     fs::metadata(path).expect("Could not fetch metadata.").len() as usize;
                 if file_len < config::MAX_INPUT_LEN {
+                    info!("Executing seed: {:?}", entry.file_name());
                     let buf = read_from_file(path);
                     executor.run_sync(&buf);
                 } else {
@@ -32,7 +41,15 @@ pub fn sync_depot(executor: &mut Executor, running: Arc<AtomicBool>, dir: &Path)
             }
         }
     }
-    info!("sync {} file from seeds.", executor.local_stats.num_inputs);
+    let num_hangs = executor.local_stats.num_hangs.0;
+    let num_crashes = executor.local_stats.num_crashes.0;
+    info!(
+        "sync {} inputs: {} normal, {} hangs, {} crashes",
+        executor.local_stats.num_inputs.0 + num_hangs + num_crashes,
+        executor.local_stats.num_inputs.0,
+        num_hangs,
+        num_crashes
+    );
     executor.update_log();
 }
 
