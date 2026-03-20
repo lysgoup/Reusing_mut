@@ -187,7 +187,7 @@ impl Executor {
         skip |= self.check_invariable(output, cond);
         self.check_consistent(output, cond);
 
-        self.do_if_has_new(buf, status, explored, cond.base.cmpid, false);  // is_dryrun=false
+        self.do_if_has_new(buf, status, explored, cond.base.cmpid);
         status = self.check_timeout(status, cond);
 
         if skip {
@@ -223,11 +223,11 @@ impl Executor {
         skip
     }
 
-    fn do_if_has_new(&mut self, buf: &Vec<u8>, status: StatusType, _explored: bool, cmpid: u32, is_dryrun: bool) {
+    fn do_if_has_new(&mut self, buf: &Vec<u8>, status: StatusType, _explored: bool, cmpid: u32) {
         // new edge: one byte in bitmap
         let (has_new_path, has_new_edge, edge_num) = self.branches.has_new(status);
 
-        if has_new_path || is_dryrun {
+        if has_new_path || self.is_dry_run {
             self.has_new_path = true;
             self.local_stats.find_new(&status);
             let id = self.depot.save(status, &buf, cmpid);
@@ -275,7 +275,7 @@ impl Executor {
     pub fn run(&mut self, buf: &Vec<u8>, cond: &mut cond_stmt::CondStmt) -> StatusType {
         self.run_init();
         let status = self.run_inner(buf);
-        self.do_if_has_new(buf, status, false, 0, false);  // is_dryrun=false
+        self.do_if_has_new(buf, status, false, 0);
         self.check_timeout(status, cond)
     }
 
@@ -283,7 +283,8 @@ impl Executor {
         self.is_dry_run = true;
         self.run_init();
         let status = self.run_inner(buf);
-        self.do_if_has_new(buf, status, false, 0, true);  // is_dryrun=true
+        info!("run_sync status: {:?}", status);
+        self.do_if_has_new(buf, status, false, 0);
         self.is_dry_run = false;
     }
 
