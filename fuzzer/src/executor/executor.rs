@@ -284,7 +284,17 @@ impl Executor {
     pub fn run_sync(&mut self, buf: &Vec<u8>) {
         self.is_dry_run = true;
         self.run_init();
-        let status = self.run_inner(buf);
+        let mut status = self.run_inner(buf);
+
+        // Error 발생 시 한 번 재시도
+        if status == StatusType::Error {
+            warn!("Dry run socket error, retrying after rebind");
+            self.rebind_forksrv();
+            self.run_init();
+            status = self.run_inner(buf);
+        }
+
+        info!("run_sync status: {:?}", status);
         self.do_if_has_new(buf, status, false, 0);
         self.is_dry_run = false;
     }
