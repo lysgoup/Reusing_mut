@@ -3,7 +3,7 @@ use crate::{cond_stmt::CondStmt, executor::StatusType};
 use crate::depot::label_pattern_tracker;
 use rand;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs,
     io::prelude::*,
     mem,
@@ -17,12 +17,15 @@ use std::{
 use angora_common::config;
 use priority_queue::PriorityQueue;
 
+pub const NO_PARENT: usize = usize::MAX;
+
 pub struct Depot {
     pub queue: Mutex<PriorityQueue<CondStmt, QPriority>>,
     pub num_inputs: AtomicUsize,
     pub num_hangs: AtomicUsize,
     pub num_crashes: AtomicUsize,
     pub dirs: DepotDir,
+    pub parent_map: Mutex<HashMap<usize, usize>>,
 }
 
 impl Depot {
@@ -33,6 +36,7 @@ impl Depot {
             num_hangs: AtomicUsize::new(0),
             num_crashes: AtomicUsize::new(0),
             dirs: DepotDir::new(in_dir, out_dir),
+            parent_map: Mutex::new(HashMap::new()),
         }
     }
 
@@ -58,8 +62,8 @@ impl Depot {
         id
     }
 
-    pub fn save(&self, status: StatusType, buf: &Vec<u8>, cmpid: u32) -> usize {
-        match status {
+    pub fn save(&self, status: StatusType, buf: &Vec<u8>, cmpid: u32, parent_id: usize) -> usize {
+        let id = match status {
             StatusType::Normal => {
                 Self::save_input(&status, buf, &self.num_inputs, cmpid, &self.dirs.inputs_dir)
             },
@@ -73,8 +77,45 @@ impl Depot {
                 cmpid,
                 &self.dirs.crashes_dir,
             ),
-            _ => 0,
+            _ => return 0,
+        };
+        if status == StatusType::Normal {
+            if let Ok(mut map) = self.parent_map.lock() {
+                map.insert(id, parent_id);
+            }
         }
+        id
+    }
+
+    pub fn write_parent_map(&self, path: &Path) {
+        let map = match self.parent_map.lock() {
+            Ok(m) => m,
+            Err(e) => {
+                warn!("Failed to lock parent_map: {:?}", e);
+                return;
+            },
+        };
+        let mut file = match fs::File::create(path) {
+            Ok(f) => f,
+            Err(e) => {
+                warn!("Failed to create parent map file: {:?}", e);
+                return;
+            },
+        };
+        let mut entries: Vec<(&usize, &usize)> = map.iter().collect();
+        entries.sort_by_key(|&(id, _)| id);
+        for (child, parent) in entries {
+            let parent_str = if *parent == NO_PARENT {
+                "none".to_string()
+            } else {
+                parent.to_string()
+            };
+            if let Err(e) = writeln!(file, "{} {}", child, parent_str) {
+                warn!("Failed to write parent map entry: {:?}", e);
+                return;
+            }
+        }
+        info!("Parent map written to {:?}", path);
     }
 
     pub fn empty(&self) -> bool {

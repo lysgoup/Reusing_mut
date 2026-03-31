@@ -128,6 +128,9 @@ pub fn fuzz_main(
 
     info!("Fuzzing finished. Saving results...");
 
+    let parent_map_path = angora_out_dir.join("parent_map.txt");
+    depot.write_parent_map(&parent_map_path);
+
     // Pattern map 저장 (3가지 형식)
     let pattern_text = angora_out_dir.join("label_patterns.txt");
 

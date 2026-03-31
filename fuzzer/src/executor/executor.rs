@@ -35,6 +35,7 @@ pub struct Executor {
     pub local_stats: stats::LocalStats,
     pub current_mutated_offsets: HashSet<u32>,
     pub is_dry_run: bool,
+    pub current_parent_id: usize,
 }
 
 impl Executor {
@@ -99,6 +100,7 @@ impl Executor {
             local_stats: Default::default(),
             current_mutated_offsets: HashSet::new(),
             is_dry_run: false,
+            current_parent_id: depot::NO_PARENT,
         }
     }
 
@@ -227,7 +229,7 @@ impl Executor {
             );
             // crash or hang
             if self.branches.has_new(unmem_status).0 {
-                self.depot.save(unmem_status, &buf, cmpid);
+                self.depot.save(unmem_status, &buf, cmpid, self.current_parent_id);
             }
         }
         skip
@@ -240,7 +242,7 @@ impl Executor {
         if has_new_path || self.is_dry_run {
             self.has_new_path = true;
             self.local_stats.find_new(&status);
-            let id = self.depot.save(status, &buf, cmpid);
+            let id = self.depot.save(status, &buf, cmpid, self.current_parent_id);
 
             if status == StatusType::Normal {
                 self.local_stats.avg_edge_num.update(edge_num as f32);
@@ -275,6 +277,7 @@ impl Executor {
     }
 
     pub fn run(&mut self, buf: &Vec<u8>, cond: &mut cond_stmt::CondStmt) -> StatusType {
+        self.current_parent_id = cond.base.belong as usize;
         self.run_init();
         let status = self.run_inner(buf);
         self.do_if_has_new(buf, status, false, 0);
@@ -282,6 +285,7 @@ impl Executor {
     }
 
     pub fn run_sync(&mut self, buf: &Vec<u8>) {
+        self.current_parent_id = depot::NO_PARENT;
         self.is_dry_run = true;
         self.run_init();
         let mut status = self.run_inner(buf);
