@@ -862,7 +862,12 @@ bool AngoraLLVMPass::runOnModule(Module &M) {
   if (env_log_dir) {
     log_dir = std::string(env_log_dir);
   }
-  std::string log_path = log_dir + "/cmpid_log.txt";
+  std::string log_path;
+  if (TrackMode) {
+    log_path = log_dir + "/cmpid_track.txt";
+  } else {
+    log_path = log_dir + "/cmpid_fast.txt";
+  }
 
   cmpid_log_file.open(log_path, std::ios::out | std::ios::app);
   if (cmpid_log_file.is_open()) {
