@@ -14,8 +14,10 @@ use std::{
     },
 };
 // https://crates.io/crates/priority-queue
-use angora_common::config;
+use angora_common::{config, defs};
 use priority_queue::PriorityQueue;
+
+use super::queue_restorer::{load_restore_map, RestoreMap};
 
 pub const NO_PARENT: usize = usize::MAX;
 
@@ -26,10 +28,24 @@ pub struct Depot {
     pub num_crashes: AtomicUsize,
     pub dirs: DepotDir,
     pub parent_map: Mutex<HashMap<usize, usize>>,
+    restore_map: Option<RestoreMap>,
+    restore_total: AtomicUsize,
+    restore_not_found: AtomicUsize,
 }
 
 impl Depot {
     pub fn new(in_dir: PathBuf, out_dir: &Path) -> Self {
+        let csv_path = in_dir.join(defs::COND_QUEUE_FILE);
+        let restore_map = if csv_path.exists() {
+            let map = load_restore_map(&csv_path);
+            if let Err(e) = fs::remove_file(&csv_path) {
+                warn!("Failed to remove {:?} after loading: {:?}", csv_path, e);
+            }
+            Some(map)
+        } else {
+            None
+        };
+
         Self {
             queue: Mutex::new(PriorityQueue::new()),
             num_inputs: AtomicUsize::new(0),
@@ -37,6 +53,9 @@ impl Depot {
             num_crashes: AtomicUsize::new(0),
             dirs: DepotDir::new(in_dir, out_dir),
             parent_map: Mutex::new(HashMap::new()),
+            restore_map,
+            restore_total: AtomicUsize::new(0),
+            restore_not_found: AtomicUsize::new(0),
         }
     }
 
@@ -159,6 +178,9 @@ impl Depot {
             },
         };
 
+        let mut restored = 0usize;
+        let mut not_found = 0usize;
+
         for mut cond in conds {
             // DEBUG: Print lb1 and lb2 before adding to depot
             // if cond.base.lb1 > 0 || cond.base.lb2 > 0 {
@@ -190,13 +212,43 @@ impl Depot {
                         }
                     }
                 } else {
-                    let priority = QPriority::init(cond.base.op);
+                    let priority = if !cond.base.is_afl() {
+                        if let Some(ref rm) = self.restore_map {
+                            if let Some(entry) = rm.get(&(cond.base.cmpid, cond.base.context, cond.base.order)) {
+                                cond.state = entry.state.clone();
+                                cond.fuzz_times = entry.fuzz_times;
+                                if !entry.variables.is_empty() {
+                                    cond.variables = entry.variables.clone();
+                                }
+                                restored += 1;
+                                trace!(
+                                    "[Restore] cmpid={} ctx={} ord={} state={:?} p={} fuzz_times={}",
+                                    cond.base.cmpid, cond.base.context, cond.base.order,
+                                    cond.state, entry.priority, entry.fuzz_times
+                                );
+                                QPriority::from_u16(entry.priority)
+                            } else {
+                                not_found += 1;
+                                QPriority::init(cond.base.op)
+                            }
+                        } else {
+                            QPriority::init(cond.base.op)
+                        }
+                    } else {
+                        QPriority::init(cond.base.op)
+                    };
                     label_pattern_tracker::add_cond_to_pattern_map(&cond, self);
                     q.push(cond, priority);
-
                 }
             }
         }
+
+        if self.restore_map.is_some() && (restored > 0 || not_found > 0) {
+            let total = self.restore_total.fetch_add(restored, Ordering::Relaxed) + restored;
+            let total_not_found = self.restore_not_found.fetch_add(not_found, Ordering::Relaxed) + not_found;
+            info!("[Restore] total_restored={}, total_not_found={}", total, total_not_found);
+        }
+
         label_pattern_tracker::print_stats();
     }
 
@@ -208,6 +260,9 @@ impl Depot {
                 poisoned.into_inner()
             },
         };
+
+        let mut restored = 0usize;
+        let mut not_found = 0usize;
 
         for mut cond in conds {
             if cond.is_desirable {
@@ -230,13 +285,43 @@ impl Depot {
                         }
                     }
                 } else {
-                    let priority = QPriority::init(cond.base.op);
+                    let priority = if !cond.base.is_afl() {
+                        if let Some(ref rm) = self.restore_map {
+                            if let Some(entry) = rm.get(&(cond.base.cmpid, cond.base.context, cond.base.order)) {
+                                cond.state = entry.state.clone();
+                                cond.fuzz_times = entry.fuzz_times;
+                                if !entry.variables.is_empty() {
+                                    cond.variables = entry.variables.clone();
+                                }
+                                restored += 1;
+                                trace!(
+                                    "[Restore] cmpid={} ctx={} ord={} state={:?} p={} fuzz_times={}",
+                                    cond.base.cmpid, cond.base.context, cond.base.order,
+                                    cond.state, entry.priority, entry.fuzz_times
+                                );
+                                QPriority::from_u16(entry.priority)
+                            } else {
+                                not_found += 1;
+                                QPriority::init(cond.base.op)
+                            }
+                        } else {
+                            QPriority::init(cond.base.op)
+                        }
+                    } else {
+                        QPriority::init(cond.base.op)
+                    };
                     label_pattern_tracker::add_cond_to_pattern_map_with_filter(&cond, self, mutated_offsets);
                     q.push(cond, priority);
-
                 }
             }
         }
+
+        if self.restore_map.is_some() && (restored > 0 || not_found > 0) {
+            let total = self.restore_total.fetch_add(restored, Ordering::Relaxed) + restored;
+            let total_not_found = self.restore_not_found.fetch_add(not_found, Ordering::Relaxed) + not_found;
+            info!("[Restore] total_restored={}, total_not_found={}", total, total_not_found);
+        }
+
         label_pattern_tracker::print_stats();
     }
 

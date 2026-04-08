@@ -46,6 +46,10 @@ impl QPriority {
     pub fn is_done(&self) -> bool {
         self.0 == DONE_PRIORITY
     }
+
+    pub fn from_u16(p: u16) -> Self {
+        QPriority(p)
+    }
 }
 
 // Make the queue get smallest priority first.

@@ -3,6 +3,7 @@ mod depot_dir;
 mod dump;
 mod file;
 mod qpriority;
+mod queue_restorer;
 mod sync;
 mod label_pattern_tracker;
 
