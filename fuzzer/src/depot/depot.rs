@@ -1,6 +1,7 @@
 use super::*;
-use crate::{cond_stmt::CondStmt, executor::StatusType};
+use crate::{cond_stmt::{CondStmt, CondState}, executor::StatusType};
 use crate::depot::label_pattern_tracker;
+use crate::mut_input::offsets::merge_offsets;
 use rand;
 use std::{
     collections::{HashMap, HashSet},
@@ -14,7 +15,7 @@ use std::{
     },
 };
 // https://crates.io/crates/priority-queue
-use angora_common::{config, defs};
+use angora_common::config;
 use priority_queue::PriorityQueue;
 
 use super::queue_restorer::{load_restore_map, RestoreMap};
@@ -34,16 +35,13 @@ pub struct Depot {
 }
 
 impl Depot {
-    pub fn new(in_dir: PathBuf, out_dir: &Path) -> Self {
-        let csv_path = in_dir.join(defs::COND_QUEUE_FILE);
-        let restore_map = if csv_path.exists() {
-            let map = load_restore_map(&csv_path);
-            if let Err(e) = fs::remove_file(&csv_path) {
-                warn!("Failed to remove {:?} after loading: {:?}", csv_path, e);
-            }
-            Some(map)
-        } else {
-            None
+    pub fn new(in_dir: PathBuf, out_dir: &Path, queue_file: Option<PathBuf>) -> Self {
+        let restore_map = match queue_file {
+            Some(csv_path) => {
+                let map = load_restore_map(&csv_path);
+                Some(map)
+            },
+            None => None,
         };
 
         Self {
@@ -216,6 +214,7 @@ impl Depot {
                         if let Some(ref rm) = self.restore_map {
                             if let Some(entry) = rm.get(&(cond.base.cmpid, cond.base.context, cond.base.order)) {
                                 cond.state = entry.state.clone();
+                                apply_offset_transform_for_state(&mut cond);
                                 cond.fuzz_times = entry.fuzz_times;
                                 if !entry.variables.is_empty() {
                                     cond.variables = entry.variables.clone();
@@ -289,6 +288,7 @@ impl Depot {
                         if let Some(ref rm) = self.restore_map {
                             if let Some(entry) = rm.get(&(cond.base.cmpid, cond.base.context, cond.base.order)) {
                                 cond.state = entry.state.clone();
+                                apply_offset_transform_for_state(&mut cond);
                                 cond.fuzz_times = entry.fuzz_times;
                                 if !entry.variables.is_empty() {
                                     cond.variables = entry.variables.clone();
@@ -341,5 +341,33 @@ impl Depot {
         if cond.is_discarded() {
             q.change_priority(&cond, QPriority::done());
         }
+    }
+}
+
+/// state 복원 시 해당 state에 도달하기까지 적용됐던 offsets 변환을 재적용한다.
+/// taint 분석은 항상 초기 상태(offsets=lb1, offsets_opt=lb2)를 반환하므로,
+/// 저장된 state에 맞게 offsets를 변환해야 탐색이 올바른 지점에서 재개된다.
+fn apply_offset_transform_for_state(cond: &mut CondStmt) {
+    match cond.state {
+        // Offset → OffsetOpt: swap(offsets, offsets_opt)
+        CondState::OffsetOpt => {
+            std::mem::swap(&mut cond.offsets, &mut cond.offsets_opt);
+        },
+        // OffsetOpt → OffsetAll: offsets = merge(lb2, lb1)
+        // OffsetAll → OffsetAllEnd 경로도 동일한 merge 상태
+        CondState::OffsetAll | CondState::OffsetAllEnd => {
+            cond.offsets = merge_offsets(&cond.offsets, &cond.offsets_opt);
+        },
+        // Deterministic 도달 경로가 두 가지:
+        //   Offset → Det           : offsets = lb1 (변환 없음)
+        //   OffsetAll → Det        : offsets = merge(lb1, lb2)
+        // offsets_opt가 존재하면 후자 경로이므로 merge 적용
+        CondState::Deterministic => {
+            if !cond.offsets_opt.is_empty() {
+                cond.offsets = merge_offsets(&cond.offsets, &cond.offsets_opt);
+            }
+        },
+        // Offset, OneByte, Unsolvable, Timeout: 변환 없음
+        _ => {},
     }
 }

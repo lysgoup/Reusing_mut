@@ -32,8 +32,21 @@ pub fn fuzz_main(
     sync_afl: bool,
     enable_afl: bool,
     enable_exploitation: bool,
+    queue_file: Option<&str>,
 ) {
     pretty_env_logger::init();
+
+    let queue_file_path: Option<PathBuf> = match queue_file {
+        Some(path) => {
+            let p = PathBuf::from(path);
+            if !p.exists() {
+                error!("queue_file {:?} does not exist. Exiting.", p);
+                std::process::exit(1);
+            }
+            Some(p)
+        },
+        None => None,
+    };
 
     let (seeds_dir, angora_out_dir) = initialize_directories(in_dir, out_dir, sync_afl);
     let command_option = command::CommandOpt::new(
@@ -51,7 +64,7 @@ pub fn fuzz_main(
 
     check_dep::check_dep(in_dir, out_dir, &command_option);
 
-    let depot = Arc::new(depot::Depot::new(seeds_dir, &angora_out_dir));
+    let depot = Arc::new(depot::Depot::new(seeds_dir, &angora_out_dir, queue_file_path));
     info!("{:?}", depot.dirs);
 
     let stats = Arc::new(RwLock::new(stats::ChartStats::new()));
