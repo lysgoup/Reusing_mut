@@ -18,8 +18,11 @@ pub fn sync_depot(executor: &mut Executor, running: Arc<AtomicBool>, dir: &Path)
     entries.sort_by_key(|e| {
         if let Ok(entry) = e {
             entry.file_name()
+                .to_string_lossy()
+                .parse::<usize>()
+                .unwrap_or(usize::MAX)
         } else {
-            std::ffi::OsString::new()
+            usize::MAX
         }
     });
     for entry in entries {
