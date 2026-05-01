@@ -20,6 +20,7 @@ pub static MSAN_OPTIONS_CONTENT: &str =
 pub static CRASHES_DIR: &str = "crashes";
 pub static HANGS_DIR: &str = "hangs";
 pub static INPUTS_DIR: &str = "queue";
+pub static SIGNAL_DIR: &str = "signal";
 
 // forksrv.rs
 pub static ENABLE_FORKSRV: &str = "ANGORA_ENABLE_FORKSRV";
