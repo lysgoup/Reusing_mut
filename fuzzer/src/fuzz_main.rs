@@ -82,7 +82,32 @@ pub fn fuzz_main(
     }
 
     info!("Dry-run completed. Total inputs executed: {}", executor.local_stats.num_exec);
-    // info!("Dry-run completed. Exiting for testing.");
+
+    let num_hangs = executor.local_stats.num_hangs.0;
+    let num_crashes = executor.local_stats.num_crashes.0;
+    let num_normal = executor.local_stats.num_inputs.0;
+    let num_total = executor.local_stats.num_exec.0;
+    let track_skipped_speed = executor.dryrun_track_skipped_speed;
+    let track_skipped_memory = executor.dryrun_track_skipped_memory;
+    let dryrun_log_path = angora_out_dir.join("dryrun_log.txt");
+    let dryrun_log_result = (|| -> std::io::Result<()> {
+        use std::io::Write;
+        let mut f = fs::File::create(&dryrun_log_path)?;
+        writeln!(f, "total_executed: {}", num_total)?;
+        writeln!(f, "normal: {}", num_normal)?;
+        writeln!(f, "hang: {}", num_hangs)?;
+        writeln!(f, "crash: {}", num_crashes)?;
+        writeln!(f, "discarded_too_long: {}", executor.dryrun_discarded_count)?;
+        writeln!(f, "forkserver_error: {}", executor.dryrun_forkserver_error_count)?;
+        writeln!(f, "track_skipped_total: {}", track_skipped_speed + track_skipped_memory)?;
+        writeln!(f, "track_skipped_speed: {}", track_skipped_speed)?;
+        writeln!(f, "track_skipped_memory: {}", track_skipped_memory)?;
+        Ok(())
+    })();
+    match dryrun_log_result {
+        Ok(_) => info!("dryrun_log.txt written to {:?}", dryrun_log_path),
+        Err(e) => warn!("Could not write dryrun_log.txt: {:?}", e),
+    }
 
     // Create dryrun_finish marker file in signal directory
     let dryrun_finish_path = depot.dirs.signal_dir.join("dryrun_finish");
@@ -90,8 +115,6 @@ pub fn fuzz_main(
         Ok(_) => info!("Created dryrun_finish marker at {:?}", dryrun_finish_path),
         Err(e) => warn!("Could not create dryrun_finish marker: {:?}", e),
     }
-
-    // return;
 
     let (handles, child_count) = init_cpus_and_run_fuzzing_threads(
         bind,
@@ -238,7 +261,7 @@ fn init_cpus_and_run_fuzzing_threads(
     };
     let free_cpus_len = free_cpus.len();
     let bind_cpus = if free_cpus_len < num_jobs {
-        warn!("The number of free cpus is less than the number of jobs. Will not bind any thread to any cpu.");
+        warn!("free_cpus({}) < num_jobs({}), will not bind threads to cpus.", free_cpus_len, num_jobs);
         false
     } else {
         true
