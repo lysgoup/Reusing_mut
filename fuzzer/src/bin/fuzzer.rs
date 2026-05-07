@@ -86,6 +86,9 @@ fn main() {
              .short("E")
              .long("disable_exploitation")
              .help("Disable the fuzzer to mutate sensitive bytes to exploit bugs"))
+        .arg(Arg::with_name("analysis_mode")
+             .long("analysis-mode")
+             .help("Enable detailed per-iteration logging to analysis_<thread_id>.csv in the output directory"))
        .get_matches();
 
     fuzz_main(
@@ -102,5 +105,6 @@ fn main() {
         matches.occurrences_of("sync_afl") > 0,
         matches.occurrences_of("disable_afl_mutation") == 0,
         matches.occurrences_of("disable_exploitation") == 0,
+        matches.is_present("analysis_mode"),
     );
 }

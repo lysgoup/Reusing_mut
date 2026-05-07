@@ -52,6 +52,7 @@ pub struct CommandOpt {
     pub ld_library: String,
     pub enable_afl: bool,
     pub enable_exploitation: bool,
+    pub analysis_mode: bool,
 }
 
 impl CommandOpt {
@@ -65,6 +66,7 @@ impl CommandOpt {
         time_limit: u64,
         enable_afl: bool,
         enable_exploitation: bool,
+        analysis_mode: bool,
     ) -> Self {
         let mode = InstrumentationMode::from(mode);
 
@@ -159,6 +161,7 @@ impl CommandOpt {
             ld_library,
             enable_afl,
             enable_exploitation,
+            analysis_mode,
         }
     }
 

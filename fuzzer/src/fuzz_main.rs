@@ -32,6 +32,7 @@ pub fn fuzz_main(
     sync_afl: bool,
     enable_afl: bool,
     enable_exploitation: bool,
+    analysis_mode: bool,
 ) {
     pretty_env_logger::init();
 
@@ -46,6 +47,7 @@ pub fn fuzz_main(
         time_limit,
         enable_afl,
         enable_exploitation,
+        analysis_mode,
     );
     info!("{:?}", command_option);
 

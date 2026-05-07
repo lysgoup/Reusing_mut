@@ -49,6 +49,10 @@ pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) ->
                 }
     
                 if insert_critical_value_with_merged(handler, record, &merged_offsets) {
+                    handler.executor.current_reusing_detail = merged_offsets.iter()
+                        .zip(record.critical_values.iter())
+                        .map(|(seg, val)| (seg.begin, seg.end, val.clone()))
+                        .collect();
                     let buf = handler.buf.clone();
                     handler.execute(&buf);
                     execution_count += 1;
@@ -137,8 +141,6 @@ fn try_combined_segments(handler: &mut SearchHandler, pattern: &Vec<u32>, iterat
         warn!("[Reusing] Cannot combine: some segment pools are empty");
         return 0;
     }
-    info!("check!!!!");
-
     // info!("[Reusing] All segment pools available, starting combined mutations");
     // ✅ 병합 오프셋을 루프 밖에서 1회만 계산
     let merged_offsets = merge_continuous_segments(&handler.cond.offsets);
@@ -193,6 +195,11 @@ fn try_combined_segments(handler: &mut SearchHandler, pattern: &Vec<u32>, iterat
                 handler.buf[begin..begin + copy_len]
                     .copy_from_slice(&value[..copy_len]);
             }
+
+            handler.executor.current_reusing_detail = merged_offsets.iter()
+                .zip(combined_values.iter())
+                .map(|(seg, val)| (seg.begin, seg.end, val.clone()))
+                .collect();
 
             let buf = handler.buf.clone();
             handler.execute(&buf);

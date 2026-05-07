@@ -9,6 +9,8 @@ use angora_common::{config, defs};
 
 use std::{
     collections::{HashMap, HashSet},
+    fs,
+    io::{BufWriter, Write},
     path::Path,
     process::{Command, Stdio},
     sync::{
@@ -35,6 +37,10 @@ pub struct Executor {
     pub local_stats: stats::LocalStats,
     pub current_mutated_offsets: HashSet<u32>,
     pub is_dry_run: bool,
+    pub current_mut_op: &'static str,
+    pub current_parent_input: usize,
+    pub current_reusing_detail: Vec<(u32, u32, Vec<u8>)>,
+    analysis_entries: Vec<(usize, usize, &'static str, String)>,
 }
 
 impl Executor {
@@ -99,6 +105,10 @@ impl Executor {
             local_stats: Default::default(),
             current_mutated_offsets: HashSet::new(),
             is_dry_run: false,
+            current_mut_op: "",
+            current_parent_input: 0,
+            current_reusing_detail: Vec::new(),
+            analysis_entries: Vec::new(),
         }
     }
 
@@ -241,6 +251,21 @@ impl Executor {
             self.has_new_path = true;
             self.local_stats.find_new(&status);
             let id = self.depot.save(status, &buf, cmpid);
+
+            if status == StatusType::Normal && !self.is_dry_run && self.cmd.analysis_mode {
+                let detail = if self.current_mut_op == "Reusing" {
+                    self.current_reusing_detail.iter()
+                        .map(|(begin, end, val)| {
+                            let hex: String = val.iter().map(|b| format!("{:02x}", b)).collect();
+                            format!("{}-{}:{}", begin, end, hex)
+                        })
+                        .collect::<Vec<_>>()
+                        .join(";")
+                } else {
+                    String::new()
+                };
+                self.analysis_entries.push((id, self.current_parent_input, self.current_mut_op, detail));
+            }
 
             if status == StatusType::Normal {
                 self.local_stats.avg_edge_num.update(edge_num as f32);
@@ -469,5 +494,29 @@ impl Executor {
         self.tmout_cnt = 0;
         self.invariable_cnt = 0;
         self.last_f = defs::UNREACHABLE;
+    }
+}
+
+impl Drop for Executor {
+    fn drop(&mut self) {
+        if !self.cmd.analysis_mode || self.analysis_entries.is_empty() {
+            return;
+        }
+        let out_dir = match self.cmd.tmp_dir.parent() {
+            Some(p) => p,
+            None => return,
+        };
+        let path = out_dir.join(format!("analysis_{}.csv", self.cmd.id));
+        let result = (|| -> std::io::Result<()> {
+            let mut w = BufWriter::new(fs::File::create(&path)?);
+            writeln!(w, "new_input_id,parent_input_id,mut_op,reusing_detail")?;
+            for (new_id, parent_id, op, detail) in &self.analysis_entries {
+                writeln!(w, "{},{},{},{}", new_id, parent_id, op, detail)?;
+            }
+            Ok(())
+        })();
+        if let Err(e) = result {
+            warn!("Could not write analysis log {:?}: {:?}", path, e);
+        }
     }
 }
