@@ -8,7 +8,7 @@ use crate::{
 use angora_common::{config, defs};
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fs,
     io::{BufWriter, Write},
     path::Path,
@@ -35,7 +35,6 @@ pub struct Executor {
     pub has_new_path: bool,
     pub global_stats: Arc<RwLock<stats::ChartStats>>,
     pub local_stats: stats::LocalStats,
-    pub current_mutated_offsets: HashSet<u32>,
     pub is_dry_run: bool,
     pub current_mut_op: &'static str,
     pub current_parent_input: usize,
@@ -107,7 +106,6 @@ impl Executor {
             has_new_path: false,
             global_stats,
             local_stats: Default::default(),
-            current_mutated_offsets: HashSet::new(),
             is_dry_run: false,
             current_mut_op: "",
             current_parent_input: 0,
@@ -120,13 +118,6 @@ impl Executor {
         }
     }
 
-    pub fn set_mutated_offsets(&mut self, offsets: HashSet<u32>) {
-        self.current_mutated_offsets = offsets;
-    }
-
-    pub fn clear_mutated_offsets(&mut self) {
-        self.current_mutated_offsets.clear();
-    }
 
     pub fn rebind_forksrv(&mut self) {
         {
@@ -300,7 +291,7 @@ impl Executor {
                     let cond_stmts = self.track(id, buf, speed);
                     if cond_stmts.len() > 0 {
                         // Filter cond_stmts based on mutated offsets
-                        self.depot.add_entries_with_filter(cond_stmts, &self.current_mutated_offsets);
+                        self.depot.add_entries(cond_stmts);
                         if self.cmd.enable_afl {
                             self.depot
                                 .add_entries(vec![cond_stmt::CondStmt::get_afl_cond(
@@ -500,6 +491,10 @@ impl Executor {
             },
         };
         ret
+    }
+
+    pub fn reuse_pool(&self) -> &depot::ReusePool {
+        &self.depot.reuse_pool
     }
 
     pub fn update_log(&mut self) {

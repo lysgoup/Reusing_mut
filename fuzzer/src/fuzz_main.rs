@@ -83,31 +83,7 @@ pub fn fuzz_main(
 
     info!("Dry-run completed. Total inputs executed: {}", executor.local_stats.num_exec);
 
-    let num_hangs = executor.local_stats.num_hangs.0;
-    let num_crashes = executor.local_stats.num_crashes.0;
-    let num_normal = executor.local_stats.num_inputs.0;
-    let num_total = executor.local_stats.num_exec.0;
-    let track_skipped_speed = executor.dryrun_track_skipped_speed;
-    let track_skipped_memory = executor.dryrun_track_skipped_memory;
-    let dryrun_log_path = angora_out_dir.join("dryrun_log.txt");
-    let dryrun_log_result = (|| -> std::io::Result<()> {
-        use std::io::Write;
-        let mut f = fs::File::create(&dryrun_log_path)?;
-        writeln!(f, "total_executed: {}", num_total)?;
-        writeln!(f, "normal: {}", num_normal)?;
-        writeln!(f, "hang: {}", num_hangs)?;
-        writeln!(f, "crash: {}", num_crashes)?;
-        writeln!(f, "discarded_too_long: {}", executor.dryrun_discarded_count)?;
-        writeln!(f, "forkserver_error: {}", executor.dryrun_forkserver_error_count)?;
-        writeln!(f, "track_skipped_total: {}", track_skipped_speed + track_skipped_memory)?;
-        writeln!(f, "track_skipped_speed: {}", track_skipped_speed)?;
-        writeln!(f, "track_skipped_memory: {}", track_skipped_memory)?;
-        Ok(())
-    })();
-    match dryrun_log_result {
-        Ok(_) => info!("dryrun_log.txt written to {:?}", dryrun_log_path),
-        Err(e) => warn!("Could not write dryrun_log.txt: {:?}", e),
-    }
+    write_dryrun_log(&angora_out_dir, &executor);
 
     // Create dryrun_finish marker file in signal directory
     let dryrun_finish_path = depot.dirs.signal_dir.join("dryrun_finish");
@@ -152,19 +128,6 @@ pub fn fuzz_main(
     }
 
     info!("Fuzzing finished. Saving results...");
-
-    // Pattern map 저장 (3가지 형식)
-    let pattern_text = angora_out_dir.join("label_patterns.txt");
-
-    // 최종 통계 출력
-    depot::print_pattern_stats();
-
-    // 파일로 저장
-    if let Err(e) = depot::save_to_text(&pattern_text) {
-        warn!("Failed to save pattern map (text): {:?}", e);
-    }
-
-    info!("Pattern map saved successfully!");
 
     // cmpid_log.txt를 output dir로 복사
     let cmpid_log_source = PathBuf::from("cmpid_log.txt");
@@ -216,6 +179,30 @@ fn gen_path_afl(out_dir: &str) -> PathBuf {
         warn!("dir has existed. {:?}", base_path);
     }
     base_path.join(defs::ANGORA_DIR_NAME)
+}
+
+fn write_dryrun_log(out_dir: &PathBuf, executor: &executor::Executor) {
+    use std::io::Write;
+    let path = out_dir.join("dryrun_log.txt");
+    let result = (|| -> std::io::Result<()> {
+        let mut f = fs::File::create(&path)?;
+        let track_skipped_speed = executor.dryrun_track_skipped_speed;
+        let track_skipped_memory = executor.dryrun_track_skipped_memory;
+        writeln!(f, "total_executed: {}", executor.local_stats.num_exec.0)?;
+        writeln!(f, "normal: {}", executor.local_stats.num_inputs.0)?;
+        writeln!(f, "hang: {}", executor.local_stats.num_hangs.0)?;
+        writeln!(f, "crash: {}", executor.local_stats.num_crashes.0)?;
+        writeln!(f, "discarded_too_long: {}", executor.dryrun_discarded_count)?;
+        writeln!(f, "forkserver_error: {}", executor.dryrun_forkserver_error_count)?;
+        writeln!(f, "track_skipped_total: {}", track_skipped_speed + track_skipped_memory)?;
+        writeln!(f, "track_skipped_speed: {}", track_skipped_speed)?;
+        writeln!(f, "track_skipped_memory: {}", track_skipped_memory)?;
+        Ok(())
+    })();
+    match result {
+        Ok(_) => info!("dryrun_log.txt written to {:?}", path),
+        Err(e) => warn!("Could not write dryrun_log.txt: {:?}", e),
+    }
 }
 
 fn set_sigint_handler(r: Arc<AtomicBool>) {

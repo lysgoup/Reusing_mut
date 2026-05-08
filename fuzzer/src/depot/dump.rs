@@ -7,6 +7,10 @@ impl Drop for Depot {
         info!("dump constraints and chart..");
         let dir = self.dirs.inputs_dir.parent().unwrap();
 
+        if let Err(e) = self.reuse_pool.save_to_text(&dir.join("reuse_pool.txt")) {
+            warn!("Failed to save reuse_pool: {:?}", e);
+        }
+
         let mut log_q = fs::File::create(dir.join(defs::COND_QUEUE_FILE)).unwrap();
         writeln!(
             log_q,
