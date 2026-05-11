@@ -4,6 +4,11 @@
 [submodule "Reusing-unibench_build"]
 	path = Reusing-unibench_build
 	url = https://github.com/lysgoup/Reusing-unibench_build.git
+	branch = angora-storfuzz
 [submodule "Angora_original"]
 	path = Angora_original
 	url = https://github.com/lysgoup/Angora_original.git
+[submodule "Angora_storfuzz"]
+	path = Angora_storfuzz
+	url = https://github.com/lysgoup/Angora_original.git
+	branch = angora-storfuzz
