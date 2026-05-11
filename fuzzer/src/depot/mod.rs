@@ -7,5 +7,5 @@ mod sync;
 mod reuse_pool;
 
 pub use self::{depot::Depot, file::*, sync::*};
-pub use self::reuse_pool::{ReusePool, ReuseEntry, ReusePattern, extract_pattern_merged};
+pub use self::reuse_pool::{ReusePool, ReuseEntry, ReusePattern, merge_segments};
 use self::{depot_dir::DepotDir, qpriority::QPriority};

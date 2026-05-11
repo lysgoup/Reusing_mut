@@ -204,6 +204,6 @@ impl ReusePool {
     }
 }
 
-pub fn extract_pattern_merged(offsets: &[TagSeg]) -> ReusePattern {
-    ReusePool::merge_segments(offsets).iter().map(|s| s.end - s.begin).collect()
+pub fn merge_segments(offsets: &[TagSeg]) -> Vec<TagSeg> {
+    ReusePool::merge_segments(offsets)
 }

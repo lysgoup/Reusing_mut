@@ -7,7 +7,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, RwLock,
 };
-use crate::search::apply_reusing_mutation;
+use crate::search::{reusing_mutation, ReusingResult};
 
 pub fn fuzz_loop(
     running: Arc<AtomicBool>,
@@ -72,17 +72,10 @@ pub fn fuzz_loop(
             match fuzz_type {
                 FuzzType::ExploreFuzz => {
                     handler.executor.current_mut_op = "Reusing";
-                    let solved_by_reusing = apply_reusing_mutation(&mut handler, 50);
-
-                    if solved_by_reusing {
-                        info!("[FuzzLoop] Condition solved by reusing, skipping other mutations");
-                        // ✅ 다른 mutation 건너뛰고 바로 다음 조건문으로
-                    } else {
-                        // 기존 mutation 계속 진행
+                    if !matches!(reusing_mutation(&mut handler, 50), ReusingResult::Solved) {
                         if handler.cond.is_time_expired() {
                             handler.cond.next_state();
                         }
-
                         if handler.cond.state.is_one_byte() {
                             handler.executor.current_mut_op = "OneByte";
                             OneByteFuzz::new(handler).run();
@@ -113,9 +106,7 @@ pub fn fuzz_loop(
                 },
                 FuzzType::ExploitFuzz => {
                     handler.executor.current_mut_op = "Reusing";
-                    let solved_by_reusing = apply_reusing_mutation(&mut handler, 50);
-
-                    if !solved_by_reusing {
+                    if !matches!(reusing_mutation(&mut handler, 50), ReusingResult::Solved) {
                         if handler.cond.state.is_one_byte() {
                             handler.executor.current_mut_op = "OneByte";
                             let mut fz = OneByteFuzz::new(handler);

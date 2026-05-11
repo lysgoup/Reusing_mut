@@ -1,51 +1,71 @@
-use crate::depot::{extract_pattern_merged, ReuseEntry};
+use crate::depot::{merge_segments, ReuseEntry, ReusePattern};
 use crate::search::SearchHandler;
-use rand::seq::SliceRandom;
+use rand::Rng;
 use angora_common::tag::TagSeg;
 use crate::stats::REUSING_STATS;
 
-pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) -> bool {
+const MAX_CONSECUTIVE_MISSES: usize = 10;
+const EXHAUSTIVE_THRESHOLD: usize = 200;
+
+pub enum ReusingResult {
+    Solved,
+    RanNoSolve,
+    NothingToRun,
+}
+
+pub fn reusing_mutation(handler: &mut SearchHandler, iterations: usize) -> ReusingResult {
     if handler.cond.is_done() {
-        return false;
+        return ReusingResult::NothingToRun;
+    }
+
+    // Skip 2 turns to let the pool grow, then force a run on the 3rd
+    if handler.cond.reusing_skip_count < 2 {
+        handler.cond.reusing_skip_count += 1;
+        return ReusingResult::NothingToRun;
+    }
+    handler.cond.reusing_skip_count = 0;
+
+    let merged_offsets = merge_segments(&handler.cond.offsets);
+    let pattern: ReusePattern = merged_offsets.iter().map(|s| s.end - s.begin).collect();
+    if pattern.is_empty() {
+        return ReusingResult::NothingToRun;
     }
 
     let snapshot = handler.executor.local_stats.snapshot();
     let buf_backup = handler.buf.clone();
-
-    let pattern = extract_pattern_merged(&handler.cond.offsets);
-    if pattern.is_empty() {
-        return false;
-    }
-
     let mut execution_count = 0;
-    let total_records = handler.executor.reuse_pool().record_count(&pattern);
 
+    // Phase 1: try direct pool entries
+    let total_records = handler.executor.reuse_pool().record_count(&pattern);
     if handler.cond.reusing_record_index < total_records {
         let start = handler.cond.reusing_record_index;
         if let Some((entries, new_idx)) = handler.executor.reuse_pool().get_entries_from(&pattern, start, iterations) {
             handler.cond.reusing_record_index = new_idx;
-            let merged_offsets = merge_continuous_segments(&handler.cond.offsets);
 
+            let mut consecutive_misses = 0;
             for entry in &entries {
-                if handler.is_stopped_or_skip() {
+                if handler.is_stopped_or_skip() || consecutive_misses >= MAX_CONSECUTIVE_MISSES {
                     break;
                 }
                 if insert_entry_bytes(handler, entry, &merged_offsets) {
-                    handler.executor.current_reusing_detail = merged_offsets.iter()
-                        .zip(entry.segment_values().iter())
-                        .map(|(seg, val)| (seg.begin, seg.end, val.to_vec()))
-                        .collect();
+                    set_reusing_detail(handler, &merged_offsets, &entry.segment_values());
                     let buf = handler.buf.clone();
                     handler.execute(&buf);
                     execution_count += 1;
+                    if handler.executor.has_new_path {
+                        consecutive_misses = 0;
+                    } else {
+                        consecutive_misses += 1;
+                    }
                 }
             }
         }
     }
 
+    // Phase 2: try combined segments
     if execution_count < iterations && pattern.len() >= 2 {
         let remaining = iterations - execution_count;
-        execution_count += try_combined_segments(handler, &pattern, remaining);
+        execution_count += try_combined_segments(handler, &pattern, &merged_offsets, remaining);
     }
 
     {
@@ -60,25 +80,25 @@ pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) ->
     handler.buf = buf_backup;
 
     if handler.cond.is_done() {
-        return true;
+        return ReusingResult::Solved;
     }
-    false
+    if execution_count > 0 {
+        ReusingResult::RanNoSolve
+    } else {
+        ReusingResult::NothingToRun
+    }
 }
 
-fn try_combined_segments(handler: &mut SearchHandler, pattern: &[u32], iterations: usize) -> usize {
+fn try_combined_segments(handler: &mut SearchHandler, pattern: &[u32], merged_offsets: &[TagSeg], iterations: usize) -> usize {
     let segment_pools: Vec<Vec<Vec<u8>>> = pattern.iter()
         .map(|&size| handler.executor.reuse_pool().get_single_segment_values(size))
         .collect();
 
     if segment_pools.iter().any(|pool| pool.is_empty()) {
-        warn!("[Reusing] Cannot combine: some segment pools are empty");
         return 0;
     }
 
-    let merged_offsets = merge_continuous_segments(&handler.cond.offsets);
     if merged_offsets.len() != pattern.len() {
-        warn!("[Reusing] Merged offsets mismatch: offsets={}, pattern={}",
-              merged_offsets.len(), pattern.len());
         return 0;
     }
 
@@ -87,42 +107,127 @@ fn try_combined_segments(handler: &mut SearchHandler, pattern: &[u32], iteration
         handler.buf.resize(max_end, 0);
     }
 
-    let mut rng = rand::thread_rng();
-    let mut execution_count = 0;
-    let mut combined: Vec<Vec<u8>> = Vec::with_capacity(pattern.len());
+    let pool_sizes: Vec<usize> = segment_pools.iter().map(|p| p.len()).collect();
+    let total_combinations = pool_sizes.iter()
+        .try_fold(1usize, |acc, &n| acc.checked_mul(n))
+        .unwrap_or(usize::MAX);
 
-    for iter in 0..iterations {
-        if handler.is_stopped_or_skip() {
-            warn!("[Reusing] Stopped early at combined iteration {}/{}", iter, iterations);
+    if total_combinations <= EXHAUSTIVE_THRESHOLD {
+        run_exhaustive_combined(handler, &segment_pools, &merged_offsets, &pool_sizes, total_combinations)
+    } else {
+        run_random_combined(handler, &segment_pools, &merged_offsets, iterations)
+    }
+}
+
+fn run_exhaustive_combined(
+    handler: &mut SearchHandler,
+    segment_pools: &[Vec<Vec<u8>>],
+    merged_offsets: &[TagSeg],
+    pool_sizes: &[usize],
+    total_combinations: usize,
+) -> usize {
+    let start = handler.cond.reusing_combined_index;
+    if start >= total_combinations {
+        return 0;
+    }
+
+    let mut execution_count = 0;
+    let mut consecutive_misses = 0;
+    let mut idx = start;
+
+    while idx < total_combinations {
+        if handler.is_stopped_or_skip() || consecutive_misses >= MAX_CONSECUTIVE_MISSES {
             break;
         }
 
-        combined.clear();
-        for pool in &segment_pools {
-            if let Some(val) = pool.choose(&mut rng) {
-                combined.push(val.clone());
-            }
-        }
+        let combination = index_to_combination(idx, pool_sizes);
+        idx += 1;
 
-        if combined.len() == merged_offsets.len() {
-            for (seg, value) in merged_offsets.iter().zip(combined.iter()) {
-                let begin = seg.begin as usize;
-                let end = seg.end as usize;
-                let copy_len = value.len().min(end - begin);
-                handler.buf[begin..begin + copy_len].copy_from_slice(&value[..copy_len]);
-            }
+        apply_combination(handler, segment_pools, merged_offsets, &combination);
+        let buf = handler.buf.clone();
+        handler.execute(&buf);
+        execution_count += 1;
 
-            handler.executor.current_reusing_detail = merged_offsets.iter()
-                .zip(combined.iter())
-                .map(|(seg, val)| (seg.begin, seg.end, val.clone()))
-                .collect();
-
-            let buf = handler.buf.clone();
-            handler.execute(&buf);
-            execution_count += 1;
+        if handler.executor.has_new_path {
+            consecutive_misses = 0;
+        } else {
+            consecutive_misses += 1;
         }
     }
+
+    handler.cond.reusing_combined_index = idx;
     execution_count
+}
+
+fn run_random_combined(
+    handler: &mut SearchHandler,
+    segment_pools: &[Vec<Vec<u8>>],
+    merged_offsets: &[TagSeg],
+    iterations: usize,
+) -> usize {
+    let mut rng = rand::thread_rng();
+    let mut execution_count = 0;
+    let mut consecutive_misses = 0;
+
+    for _ in 0..iterations {
+        if handler.is_stopped_or_skip() || consecutive_misses >= MAX_CONSECUTIVE_MISSES {
+            break;
+        }
+
+        let combination: Vec<usize> = segment_pools.iter()
+            .map(|pool| rng.gen_range(0, pool.len()))
+            .collect();
+
+        apply_combination(handler, segment_pools, merged_offsets, &combination);
+        let buf = handler.buf.clone();
+        handler.execute(&buf);
+        execution_count += 1;
+
+        if handler.executor.has_new_path {
+            consecutive_misses = 0;
+        } else {
+            consecutive_misses += 1;
+        }
+    }
+
+    execution_count
+}
+
+fn apply_combination(
+    handler: &mut SearchHandler,
+    segment_pools: &[Vec<Vec<u8>>],
+    merged_offsets: &[TagSeg],
+    combination: &[usize],
+) {
+    for (j, (seg, &idx)) in merged_offsets.iter().zip(combination.iter()).enumerate() {
+        let value = &segment_pools[j][idx];
+        let begin = seg.begin as usize;
+        let end = seg.end as usize;
+        let copy_len = value.len().min(end - begin);
+        handler.buf[begin..begin + copy_len].copy_from_slice(&value[..copy_len]);
+    }
+
+    handler.executor.current_reusing_detail = merged_offsets.iter()
+        .zip(combination.iter())
+        .enumerate()
+        .map(|(j, (seg, &idx))| (seg.begin, seg.end, segment_pools[j][idx].clone()))
+        .collect();
+}
+
+fn index_to_combination(mut index: usize, pool_sizes: &[usize]) -> Vec<usize> {
+    let mut result = vec![0usize; pool_sizes.len()];
+    for j in (0..pool_sizes.len()).rev() {
+        result[j] = index % pool_sizes[j];
+        index /= pool_sizes[j];
+    }
+    result
+}
+
+fn set_reusing_detail(handler: &mut SearchHandler, merged_offsets: &[TagSeg], values: &[&[u8]]) {
+    handler.executor.current_reusing_detail = merged_offsets.iter()
+        .zip(values.iter())
+        .map(|(seg, val)| (seg.begin, seg.end, val.to_vec()))
+        .collect();
 }
 
 fn insert_entry_bytes(
@@ -147,22 +252,4 @@ fn insert_entry_bytes(
         handler.buf[begin..begin + copy_len].copy_from_slice(&value[..copy_len]);
     }
     true
-}
-
-fn merge_continuous_segments(offsets: &[TagSeg]) -> Vec<TagSeg> {
-    if offsets.is_empty() {
-        return vec![];
-    }
-    let mut merged = Vec::new();
-    let mut current = offsets[0];
-    for &next in &offsets[1..] {
-        if current.end == next.begin {
-            current.end = next.end;
-        } else {
-            merged.push(current);
-            current = next;
-        }
-    }
-    merged.push(current);
-    merged
 }
