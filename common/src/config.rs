@@ -12,7 +12,7 @@ pub const PREFER_FAST_COND: bool = true;
 pub const MAX_INPUT_LEN: usize = 1000000;
 
 // branch.rs
-pub const MAP_SIZE_POW2: usize = 20;
+pub const MAP_SIZE_POW2: usize = 30;
 pub const BRANCHES_SIZE: usize = 1 << MAP_SIZE_POW2;
 
 // executor.rs:

@@ -2,7 +2,7 @@
 #define _HAVE_DEFS_H
 
 #ifndef MAP_SIZE_POW2
-#define MAP_SIZE_POW2 20
+#define MAP_SIZE_POW2 23
 #endif
 #define MAP_SIZE (1 << MAP_SIZE_POW2)
 #define ENABLE_UNFOLD_BRANCH 1
