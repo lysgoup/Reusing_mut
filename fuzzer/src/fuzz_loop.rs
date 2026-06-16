@@ -17,6 +17,7 @@ pub fn fuzz_loop(
     global_stats: Arc<RwLock<stats::ChartStats>>,
 ) {
     let search_method = cmd_opt.search_method;
+    let enable_reusing = cmd_opt.enable_reusing;
     let mut executor = Executor::new(
         cmd_opt,
         global_branches,
@@ -71,14 +72,16 @@ pub fn fuzz_loop(
             let mut handler = SearchHandler::new(running.clone(), &mut executor, &mut cond, buf);
             match fuzz_type {
                 FuzzType::ExploreFuzz => {
-                    handler.executor.current_mut_op = "Reusing";
-                    let solved_by_reusing = apply_reusing_mutation(&mut handler, 50);
+                    let solved_by_reusing = if enable_reusing {
+                        handler.executor.current_mut_op = "Reusing";
+                        apply_reusing_mutation(&mut handler, 50)
+                    } else {
+                        false
+                    };
 
                     if solved_by_reusing {
                         info!("[FuzzLoop] Condition solved by reusing, skipping other mutations");
-                        // ✅ 다른 mutation 건너뛰고 바로 다음 조건문으로
                     } else {
-                        // 기존 mutation 계속 진행
                         if handler.cond.is_time_expired() {
                             handler.cond.next_state();
                         }
@@ -112,8 +115,12 @@ pub fn fuzz_loop(
                     }
                 },
                 FuzzType::ExploitFuzz => {
-                    handler.executor.current_mut_op = "Reusing";
-                    let solved_by_reusing = apply_reusing_mutation(&mut handler, 50);
+                    let solved_by_reusing = if enable_reusing {
+                        handler.executor.current_mut_op = "Reusing";
+                        apply_reusing_mutation(&mut handler, 50)
+                    } else {
+                        false
+                    };
 
                     if !solved_by_reusing {
                         if handler.cond.state.is_one_byte() {

@@ -89,6 +89,9 @@ fn main() {
         .arg(Arg::with_name("analysis_mode")
              .long("analysis-mode")
              .help("Enable detailed per-iteration logging to analysis_<thread_id>.csv in the output directory"))
+        .arg(Arg::with_name("enable_reusing")
+             .long("enable-reusing")
+             .help("Enable reusing mutation (apply previously successful mutations to similar conditions)"))
        .get_matches();
 
     fuzz_main(
@@ -106,5 +109,6 @@ fn main() {
         matches.occurrences_of("disable_afl_mutation") == 0,
         matches.occurrences_of("disable_exploitation") == 0,
         matches.is_present("analysis_mode"),
+        matches.is_present("enable_reusing"),
     );
 }

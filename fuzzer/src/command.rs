@@ -53,6 +53,7 @@ pub struct CommandOpt {
     pub enable_afl: bool,
     pub enable_exploitation: bool,
     pub analysis_mode: bool,
+    pub enable_reusing: bool,
 }
 
 impl CommandOpt {
@@ -67,6 +68,7 @@ impl CommandOpt {
         enable_afl: bool,
         enable_exploitation: bool,
         analysis_mode: bool,
+        enable_reusing: bool,
     ) -> Self {
         let mode = InstrumentationMode::from(mode);
 
@@ -162,6 +164,7 @@ impl CommandOpt {
             enable_afl,
             enable_exploitation,
             analysis_mode,
+            enable_reusing,
         }
     }
 

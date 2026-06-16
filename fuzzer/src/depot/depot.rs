@@ -23,16 +23,18 @@ pub struct Depot {
     pub num_hangs: AtomicUsize,
     pub num_crashes: AtomicUsize,
     pub dirs: DepotDir,
+    pub enable_reusing: bool,
 }
 
 impl Depot {
-    pub fn new(in_dir: PathBuf, out_dir: &Path) -> Self {
+    pub fn new(in_dir: PathBuf, out_dir: &Path, enable_reusing: bool) -> Self {
         Self {
             queue: Mutex::new(PriorityQueue::new()),
             num_inputs: AtomicUsize::new(0),
             num_hangs: AtomicUsize::new(0),
             num_crashes: AtomicUsize::new(0),
             dirs: DepotDir::new(in_dir, out_dir),
+            enable_reusing,
         }
     }
 
@@ -135,7 +137,9 @@ impl Depot {
                         // If existed one and our new one has two different conditions,
                         // this indicate that it is explored.
                         if v.0.base.condition != cond.base.condition {
-                            label_pattern_tracker::add_cond_to_pattern_map(&cond, self);
+                            if self.enable_reusing {
+                                label_pattern_tracker::add_cond_to_pattern_map(&cond, self);
+                            }
                             v.0.mark_as_done();
                             q.change_priority(&cond, QPriority::done());
                         } else {
@@ -150,13 +154,17 @@ impl Depot {
                     }
                 } else {
                     let priority = QPriority::init(cond.base.op);
-                    label_pattern_tracker::add_cond_to_pattern_map(&cond, self);
+                    if self.enable_reusing {
+                        label_pattern_tracker::add_cond_to_pattern_map(&cond, self);
+                    }
                     q.push(cond, priority);
 
                 }
             }
         }
-        label_pattern_tracker::print_stats();
+        if self.enable_reusing {
+            label_pattern_tracker::print_stats();
+        }
     }
 
     pub fn add_entries_with_filter(&self, conds: Vec<CondStmt>, mutated_offsets: &HashSet<u32>) {
@@ -175,7 +183,9 @@ impl Depot {
                         // If existed one and our new one has two different conditions,
                         // this indicate that it is explored.
                         if v.0.base.condition != cond.base.condition {
-                            label_pattern_tracker::add_cond_to_pattern_map_with_filter(&cond, self, mutated_offsets);
+                            if self.enable_reusing {
+                                label_pattern_tracker::add_cond_to_pattern_map_with_filter(&cond, self, mutated_offsets);
+                            }
                             v.0.mark_as_done();
                             q.change_priority(&cond, QPriority::done());
                         } else {
@@ -190,13 +200,17 @@ impl Depot {
                     }
                 } else {
                     let priority = QPriority::init(cond.base.op);
-                    label_pattern_tracker::add_cond_to_pattern_map_with_filter(&cond, self, mutated_offsets);
+                    if self.enable_reusing {
+                        label_pattern_tracker::add_cond_to_pattern_map_with_filter(&cond, self, mutated_offsets);
+                    }
                     q.push(cond, priority);
 
                 }
             }
         }
-        label_pattern_tracker::print_stats();
+        if self.enable_reusing {
+            label_pattern_tracker::print_stats();
+        }
     }
 
     pub fn update_entry(&self, cond: CondStmt) {

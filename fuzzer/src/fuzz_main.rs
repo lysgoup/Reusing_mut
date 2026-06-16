@@ -33,6 +33,7 @@ pub fn fuzz_main(
     enable_afl: bool,
     enable_exploitation: bool,
     analysis_mode: bool,
+    enable_reusing: bool,
 ) {
     pretty_env_logger::init();
 
@@ -48,12 +49,13 @@ pub fn fuzz_main(
         enable_afl,
         enable_exploitation,
         analysis_mode,
+        enable_reusing,
     );
     info!("{:?}", command_option);
 
     check_dep::check_dep(in_dir, out_dir, &command_option);
 
-    let depot = Arc::new(depot::Depot::new(seeds_dir, &angora_out_dir));
+    let depot = Arc::new(depot::Depot::new(seeds_dir, &angora_out_dir, enable_reusing));
     info!("{:?}", depot.dirs);
 
     let stats = Arc::new(RwLock::new(stats::ChartStats::new()));
@@ -116,6 +118,9 @@ pub fn fuzz_main(
         Err(e) => warn!("Could not create dryrun_finish marker: {:?}", e),
     }
 
+    info!("Waiting 10 seconds before starting fuzzing threads...");
+    thread::sleep(time::Duration::from_secs(10));
+
     let (handles, child_count) = init_cpus_and_run_fuzzing_threads(
         bind,
         num_jobs,
@@ -153,29 +158,24 @@ pub fn fuzz_main(
 
     info!("Fuzzing finished. Saving results...");
 
-    // Pattern map 저장 (3가지 형식)
-    let pattern_text = angora_out_dir.join("label_patterns.txt");
-
-    // 최종 통계 출력
-    depot::print_pattern_stats();
-
-    // 파일로 저장
-    if let Err(e) = depot::save_to_text(&pattern_text) {
-        warn!("Failed to save pattern map (text): {:?}", e);
-    }
-
-    info!("Pattern map saved successfully!");
-
-    // cmpid_log.txt를 output dir로 복사
-    let cmpid_log_source = PathBuf::from("cmpid_log.txt");
-    if cmpid_log_source.exists() {
-        let cmpid_log_dest = angora_out_dir.join("cmpid_log.txt");
-        match fs::copy(&cmpid_log_source, &cmpid_log_dest) {
-            Ok(_) => info!("cmpid_log.txt copied to output directory successfully!"),
-            Err(e) => warn!("Failed to copy cmpid_log.txt: {:?}", e),
+    if enable_reusing {
+        let pattern_text = angora_out_dir.join("label_patterns.txt");
+        depot::print_pattern_stats();
+        if let Err(e) = depot::save_to_text(&pattern_text) {
+            warn!("Failed to save pattern map (text): {:?}", e);
         }
-    } else {
-        warn!("cmpid_log.txt not found in current directory");
+        info!("Pattern map saved successfully!");
+
+        let cmpid_log_source = PathBuf::from("cmpid_log.txt");
+        if cmpid_log_source.exists() {
+            let cmpid_log_dest = angora_out_dir.join("cmpid_log.txt");
+            match fs::copy(&cmpid_log_source, &cmpid_log_dest) {
+                Ok(_) => info!("cmpid_log.txt copied to output directory successfully!"),
+                Err(e) => warn!("Failed to copy cmpid_log.txt: {:?}", e),
+            }
+        } else {
+            warn!("cmpid_log.txt not found in current directory");
+        }
     }
 
     match fs::remove_file(&fuzzer_stats) {
