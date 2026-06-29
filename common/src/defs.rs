@@ -7,6 +7,12 @@ pub static ANGORA_BIN_DIR: &str = "ANGORA_BIN_DIR";
 pub static TRACK_OUTPUT_VAR: &str = "ANGORA_TRACK_OUTPUT";
 pub static COND_STMT_ENV_VAR: &str = "ANGORA_COND_STMT_SHM_ID";
 pub static BRANCHES_SHM_ENV_VAR: &str = "ANGORA_BRANCHES_SHM_ID";
+// StorFuzz: shmem id of the data-coverage map passed to instrumented children.
+pub static DATA_SHM_ENV_VAR: &str = "ANGORA_DATA_SHM_ID";
+// StorFuzz: compile-time env var read by angora-clang (via getenv) to load
+// StorFuzzPass when building a fast target. The fuzzer's *runtime* toggle is the
+// `--enable-storfuzz` CLI flag (see command.rs), not this variable.
+pub static USE_STORFUZZ_VAR: &str = "ANGORA_USE_STORFUZZ";
 pub static LD_LIBRARY_PATH_VAR: &str = "LD_LIBRARY_PATH";
 pub static ASAN_OPTIONS_VAR: &str = "ASAN_OPTIONS";
 pub static MSAN_OPTIONS_VAR: &str = "MSAN_OPTIONS";
