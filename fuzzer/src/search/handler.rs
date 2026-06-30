@@ -56,6 +56,16 @@ impl<'a> SearchHandler<'a> {
         !self.running.load(Ordering::Relaxed) || self.skip
     }
 
+    pub fn is_stopped(&self) -> bool {
+        !self.running.load(Ordering::Relaxed)
+    }
+
+    // reusing+Det 한 record 처리 후 다음 record를 위해 skip/budget 초기화
+    pub fn reset_phase(&mut self) {
+        self.skip = false;
+        self.max_times = self.executor.local_stats.num_exec + config::MAX_SEARCH_EXEC_NUM.into();
+    }
+
     fn process_status(&mut self, status: StatusType) {
         match status {
             StatusType::Skip => {
