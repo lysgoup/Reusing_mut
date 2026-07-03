@@ -97,6 +97,19 @@ static u8 check_if_assembler(u32 argc, const char **argv) {
   return 0;
 }
 
+static void add_storfuzz_pass() {
+  /* Load StorFuzzPass only when USE_FAST=1 AND ANGORA_USE_STORFUZZ=1.
+   * Never load it for USE_TRACK (DFSan path). */
+  u8 *use_storfuzz = getenv("ANGORA_USE_STORFUZZ");
+  if (clang_type == CLANG_FAST_TYPE && use_storfuzz) {
+    cc_params[cc_par_cnt++] = "-Xclang";
+    cc_params[cc_par_cnt++] = "-load";
+    cc_params[cc_par_cnt++] = "-Xclang";
+    cc_params[cc_par_cnt++] =
+        alloc_printf("%s/pass/libStorFuzzPass.so", obj_path);
+  }
+}
+
 static void add_angora_pass() {
   if (clang_type != CLANG_DFSAN_TYPE) {
     cc_params[cc_par_cnt++] = "-Xclang";
@@ -260,6 +273,7 @@ static void edit_params(u32 argc, char **argv) {
   if (!maybe_assembler) {
     add_angora_pass();
     add_dfsan_pass();
+    add_storfuzz_pass();
   }
 
   cc_params[cc_par_cnt++] = "-pie";

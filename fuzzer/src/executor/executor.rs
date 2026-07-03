@@ -1,7 +1,7 @@
 use super::{limit::SetLimit, *};
 
 use crate::{
-    branches, command,
+    branches, command, data_cov,
     cond_stmt::{self, NextState},
     depot, stats, track,
 };
@@ -24,6 +24,9 @@ use wait_timeout::ChildExt;
 pub struct Executor {
     pub cmd: command::CommandOpt,
     pub branches: branches::Branches,
+    // StorFuzz data-flow coverage. `Some` only when --enable-storfuzz is passed
+    // (cmd.enable_storfuzz); `None` => behaves exactly like upstream Angora.
+    data_cov: Option<data_cov::DataCov>,
     pub t_conds: cond_stmt::ShmConds,
     envs: HashMap<String, String>,
     forksrv: Option<Forksrv>,
@@ -58,6 +61,13 @@ impl Executor {
         let branches = branches::Branches::new(global_branches);
         let t_conds = cond_stmt::ShmConds::new();
 
+        // ** StorFuzz data coverage (runtime toggle via --enable-storfuzz) **
+        let data_cov = if cmd.enable_storfuzz {
+            Some(data_cov::DataCov::new())
+        } else {
+            None
+        };
+
         // ** Envs **
         let mut envs = HashMap::new();
         envs.insert(
@@ -80,6 +90,15 @@ impl Executor {
             defs::LD_LIBRARY_PATH_VAR.to_string(),
             cmd.ld_library.clone(),
         );
+        // Pass the data-coverage shmem id to instrumented children, but only
+        // when StorFuzz is enabled. Must live in `envs` (children are spawned
+        // with env_clear().envs(&envs)) — same pattern as BRANCHES_SHM_ENV_VAR.
+        if let Some(ref dc) = data_cov {
+            envs.insert(
+                defs::DATA_SHM_ENV_VAR.to_string(),
+                dc.get_id().to_string(),
+            );
+        }
 
         let fd = pipe_fd::PipeFd::new(&cmd.out_file);
         let forksrv = Some(forksrv::Forksrv::new(
@@ -96,6 +115,7 @@ impl Executor {
         Self {
             cmd,
             branches,
+            data_cov,
             t_conds,
             envs,
             forksrv,
@@ -228,6 +248,9 @@ impl Executor {
     fn try_unlimited_memory(&mut self, buf: &Vec<u8>, cmpid: u32) -> bool {
         let mut skip = false;
         self.branches.clear_trace();
+        if let Some(ref mut dc) = self.data_cov {
+            dc.clear_run_map();
+        }
         if self.cmd.is_stdin {
             self.fd.rewind();
         }
@@ -255,7 +278,15 @@ impl Executor {
         // new edge: one byte in bitmap
         let (has_new_path, has_new_edge, edge_num) = self.branches.has_new(status);
 
-        if has_new_path || self.is_dry_run {
+        // StorFuzz: a run that produces new data-coverage bits is also "new".
+        // When StorFuzz is disabled (data_cov is None) this is always false, so
+        // the save condition reduces to the original `has_new_path || dry_run`.
+        let data_new = match self.data_cov {
+            Some(ref mut dc) => dc.has_new(),
+            None => false,
+        };
+
+        if has_new_path || data_new || self.is_dry_run {
             self.has_new_path = true;
             self.local_stats.find_new(&status);
             let id = self.depot.save(status, &buf, cmpid);
@@ -372,6 +403,9 @@ impl Executor {
         self.write_test(buf);
 
         self.branches.clear_trace();
+        if let Some(ref mut dc) = self.data_cov {
+            dc.clear_run_map();
+        }
 
         compiler_fence(Ordering::SeqCst);
         let ret_status = if let Some(ref mut fs) = self.forksrv {
@@ -503,10 +537,14 @@ impl Executor {
     }
 
     pub fn update_log(&mut self) {
-        self.global_stats
-            .write()
-            .unwrap()
-            .sync_from_local(&mut self.local_stats);
+        {
+            let mut gs = self.global_stats.write().unwrap();
+            gs.sync_from_local(&mut self.local_stats);
+            // StorFuzz: report cumulative data-coverage bits (no-op when off).
+            if let Some(ref dc) = self.data_cov {
+                gs.set_data_bits(dc.bits_set());
+            }
+        }
 
         self.t_conds.clear();
         self.tmout_cnt = 0;

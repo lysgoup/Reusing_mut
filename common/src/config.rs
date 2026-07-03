@@ -15,6 +15,15 @@ pub const MAX_INPUT_LEN: usize = 1000000;
 pub const MAP_SIZE_POW2: usize = 23;
 pub const BRANCHES_SIZE: usize = 1 << MAP_SIZE_POW2;
 
+// data_cov.rs (StorFuzz data-flow coverage)
+// NOTE: single source of truth for the StorFuzz data map size. The LLVM pass
+// (StorFuzzPass.cc) and the fast runtime (storfuzz_rt.c) derive their map size
+// from DATA_MAP_SIZE_POW2 below (injected via CMake / runtime_fast build.rs).
+// The StorFuzz pass asserts map_size*8 >= 2^REDUCTION_WIDTH * 4096, i.e. with
+// the default REDUCTION_WIDTH=8 the minimum valid value is 17.
+pub const DATA_MAP_SIZE_POW2: usize = 23;
+pub const DATA_COV_SIZE: usize = 1 << DATA_MAP_SIZE_POW2;
+
 // executor.rs:
 pub const TMOUT_SKIP: usize = 3;
 pub const TIME_LIMIT: u64 = 1;

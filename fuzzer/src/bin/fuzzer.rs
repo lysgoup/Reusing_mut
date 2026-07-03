@@ -92,6 +92,9 @@ fn main() {
         .arg(Arg::with_name("enable_reusing")
              .long("enable-reusing")
              .help("Enable reusing mutation (apply previously successful mutations to similar conditions)"))
+        .arg(Arg::with_name("enable_storfuzz")
+             .long("enable-storfuzz")
+             .help("Enable StorFuzz data-flow coverage (target must be compiled with ANGORA_USE_STORFUZZ=1)"))
        .get_matches();
 
     fuzz_main(
@@ -110,5 +113,6 @@ fn main() {
         matches.occurrences_of("disable_exploitation") == 0,
         matches.is_present("analysis_mode"),
         matches.is_present("enable_reusing"),
+        matches.is_present("enable_storfuzz"),
     );
 }

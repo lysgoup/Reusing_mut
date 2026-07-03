@@ -10,6 +10,13 @@ pub struct ChartStats {
     init_time: TimeIns,
     track_time: TimeDuration,
     density: Average,
+    // StorFuzz: cumulative data-coverage bits. `storfuzz` gates whether the
+    // DATACOV line is shown, so output is unchanged when StorFuzz is disabled.
+    // skip serialization so chart_stat.json is byte-identical to the baseline.
+    #[serde(skip)]
+    data_bits_set: Counter,
+    #[serde(skip)]
+    storfuzz: bool,
 
     num_rounds: Counter,
     max_rounds: Counter,
@@ -99,6 +106,13 @@ impl ChartStats {
         self.density = Average::new(gb.get_density(), 0);
     }
 
+    /// StorFuzz: record cumulative data-coverage bits and mark StorFuzz active
+    /// (so the DATACOV line is rendered). Only called when StorFuzz is enabled.
+    pub fn set_data_bits(&mut self, n: usize) {
+        self.data_bits_set = n.into();
+        self.storfuzz = true;
+    }
+
     fn get_speed(&mut self) {
         let t: TimeDuration = self.init_time.into();
         let d: time::Duration = t.into();
@@ -146,6 +160,12 @@ impl fmt::Display for ChartStats {
             warn!("Find small number constraints, please make sure you have modeled the read functions.")
         }
 
+        let data_line = if self.storfuzz {
+            format!("  DATACOV  |    BITS: {}\n", self.data_bits_set)
+        } else {
+            String::new()
+        };
+
         write!(
             f,
             r#"
@@ -153,7 +173,7 @@ impl fmt::Display for ChartStats {
 {}
     TIMING |     RUN: {},   TRACK: {}
   COVERAGE |    EDGE: {},   DENSITY: {}%
-    EXECS  |   TOTAL: {},     ROUND: {},     MAX_R: {}
+{}    EXECS  |   TOTAL: {},     ROUND: {},     MAX_R: {}
     SPEED  |  PERIOD: {:6}r/s    TIME: {}us, 
     FOUND  |    PATH: {},     HANGS: {},   CRASHES: {}
 {}
@@ -171,6 +191,7 @@ impl fmt::Display for ChartStats {
             self.track_time,
             self.avg_edge_num,
             self.density,
+            data_line,
             self.num_exec,
             self.num_rounds,
             self.max_rounds,

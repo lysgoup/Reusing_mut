@@ -34,6 +34,7 @@ pub fn fuzz_main(
     enable_exploitation: bool,
     analysis_mode: bool,
     enable_reusing: bool,
+    enable_storfuzz: bool,
 ) {
     pretty_env_logger::init();
 
@@ -50,6 +51,7 @@ pub fn fuzz_main(
         enable_exploitation,
         analysis_mode,
         enable_reusing,
+        enable_storfuzz,
     );
     info!("{:?}", command_option);
 

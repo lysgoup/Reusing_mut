@@ -25,6 +25,19 @@ EXECUTE_PROCESS(
 )
 message(STATUS "MAP_SIZE_POW2: ${MAP_SIZE_POW2}")
 
+# StorFuzz: extract DATA_MAP_SIZE_POW2 from config.rs (single source of truth).
+# The grep on "pub const DATA_MAP_SIZE_POW2" matches only the definition line,
+# not the "1 << DATA_MAP_SIZE_POW2" usage in DATA_COV_SIZE.
+EXECUTE_PROCESS(
+    COMMAND cat ${CMAKE_CURRENT_SOURCE_DIR}/../../common/src/config.rs
+    COMMAND grep "pub const DATA_MAP_SIZE_POW2"
+    COMMAND cut -f2 -d "="
+    COMMAND grep -o "[[:digit:]]*"
+    COMMAND tr -d "\n"
+    OUTPUT_VARIABLE DATA_MAP_SIZE_POW2
+)
+message(STATUS "DATA_MAP_SIZE_POW2: ${DATA_MAP_SIZE_POW2}")
+
 if (NOT TARGET LLVMPassConfig)
     add_library(LLVMPassConfig INTERFACE IMPORTED)
     set_target_properties(LLVMPassConfig PROPERTIES
@@ -55,4 +68,9 @@ install (TARGETS AngoraPass DESTINATION ${ANGORA_PASS_DIR})
 add_library(DFSanPass MODULE DFSanPass.cc)
 target_link_libraries(DFSanPass LLVMPassConfig)
 install (TARGETS DFSanPass DESTINATION ${ANGORA_PASS_DIR})
+
+add_library(StorFuzzPass MODULE StorFuzzPass.cc)
+target_link_libraries(StorFuzzPass LLVMPassConfig)
+target_compile_definitions(StorFuzzPass PRIVATE DATA_MAP_SIZE_POW2=${DATA_MAP_SIZE_POW2})
+install (TARGETS StorFuzzPass DESTINATION ${ANGORA_PASS_DIR})
 
