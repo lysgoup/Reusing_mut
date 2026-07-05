@@ -7,7 +7,6 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, RwLock,
 };
-use crate::search::apply_reusing_mutation;
 
 pub fn fuzz_loop(
     running: Arc<AtomicBool>,
@@ -72,19 +71,28 @@ pub fn fuzz_loop(
             let mut handler = SearchHandler::new(running.clone(), &mut executor, &mut cond, buf);
             match fuzz_type {
                 FuzzType::ExploreFuzz => {
-                    let solved_by_reusing = if enable_reusing {
+                    // OneByte conds are already solved exhaustively (0..256, stops as
+                    // soon as it flips) by OneByteFuzz below, so reusing's guesses can
+                    // only add overhead here, not save work.
+                    let reusing_outcome = if enable_reusing && !handler.cond.state.is_one_byte() {
                         handler.executor.current_mut_op = "Reusing";
-                        apply_reusing_mutation(&mut handler, 50)
+                        ReusingFuzz::new(&mut handler).run(50)
                     } else {
-                        false
+                        ReusingOutcome::NoProgress
                     };
 
-                    if solved_by_reusing {
+                    if reusing_outcome == ReusingOutcome::Solved {
                         info!("[FuzzLoop] Condition solved by reusing, skipping other mutations");
                     } else {
                         if handler.cond.is_time_expired() {
                             handler.cond.next_state();
                         }
+
+                        // If reusing didn't solve it but left behind an improved buffer
+                        // (best_f < MAX), tag whatever runs next as "Reusing+<op>" so
+                        // analysis-mode can tell that discovery apart from one this
+                        // search stage found entirely on its own.
+                        let improved = reusing_outcome == ReusingOutcome::Improved;
 
                         if handler.cond.state.is_one_byte() {
                             handler.executor.current_mut_op = "OneByte";
@@ -95,19 +103,19 @@ pub fn fuzz_loop(
                         } else {
                             match search_method {
                                 SearchMethod::Gd => {
-                                    handler.executor.current_mut_op = "GD";
+                                    handler.executor.current_mut_op = if improved { "Reusing+GD" } else { "GD" };
                                     GdSearch::new(handler).run(&mut thread_rng());
                                 },
                                 SearchMethod::Random => {
-                                    handler.executor.current_mut_op = "Random";
+                                    handler.executor.current_mut_op = if improved { "Reusing+Random" } else { "Random" };
                                     RandomSearch::new(handler).run();
                                 },
                                 SearchMethod::Cbh => {
-                                    handler.executor.current_mut_op = "Cbh";
+                                    handler.executor.current_mut_op = if improved { "Reusing+Cbh" } else { "Cbh" };
                                     CbhSearch::new(handler).run();
                                 },
                                 SearchMethod::Mb => {
-                                    handler.executor.current_mut_op = "MB";
+                                    handler.executor.current_mut_op = if improved { "Reusing+MB" } else { "MB" };
                                     MbSearch::new(handler).run();
                                 },
                             }
@@ -115,23 +123,28 @@ pub fn fuzz_loop(
                     }
                 },
                 FuzzType::ExploitFuzz => {
-                    let solved_by_reusing = if enable_reusing {
+                    // Same reasoning as ExploreFuzz: OneByte is exhaustively covered
+                    // by OneByteFuzz below, so skip reusing for it.
+                    //
+                    // Unlike ExploreFuzz, an ExploitFuzz cond isn't a branch to
+                    // "solve" -- it's a sensitive function-call argument to bombard
+                    // with extreme values looking for a crash. cond.is_done() (i.e.
+                    // ReusingOutcome::Solved) reflects the Explore-style "output ==
+                    // 0" signal, which doesn't mean "found the bug" here, so it must
+                    // not be allowed to skip the actual exploitation attempt below.
+                    if enable_reusing && !handler.cond.state.is_one_byte() {
                         handler.executor.current_mut_op = "Reusing";
-                        apply_reusing_mutation(&mut handler, 50)
-                    } else {
-                        false
-                    };
+                        ReusingFuzz::new(&mut handler).run(50);
+                    }
 
-                    if !solved_by_reusing {
-                        if handler.cond.state.is_one_byte() {
-                            handler.executor.current_mut_op = "OneByte";
-                            let mut fz = OneByteFuzz::new(handler);
-                            fz.run();
-                            fz.handler.cond.to_unsolvable();
-                        } else {
-                            handler.executor.current_mut_op = "Exploit";
-                            ExploitFuzz::new(handler).run();
-                        }
+                    if handler.cond.state.is_one_byte() {
+                        handler.executor.current_mut_op = "OneByte";
+                        let mut fz = OneByteFuzz::new(handler);
+                        fz.run();
+                        fz.handler.cond.to_unsolvable();
+                    } else {
+                        handler.executor.current_mut_op = "Exploit";
+                        ExploitFuzz::new(handler).run();
                     }
                 },
                 FuzzType::AFLFuzz => {
@@ -145,7 +158,7 @@ pub fn fuzz_loop(
                 FuzzType::CmpFnFuzz => {
                     let solved_by_reusing = if enable_reusing {
                         handler.executor.current_mut_op = "Reusing";
-                        apply_reusing_mutation(&mut handler, 50)
+                        ReusingFuzz::new(&mut handler).run(50) == ReusingOutcome::Solved
                     } else {
                         false
                     };

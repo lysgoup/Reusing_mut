@@ -52,14 +52,17 @@ impl ChartStats {
         st.time += local.start_time.into();
         // st.num_conds.count();
 
-        st.num_exec += local.num_exec;
+        // Grand totals count every execution, reusing included. The per-fuzz-type
+        // breakdown (Explore/Exploit/...) excludes reusing's share so it isn't
+        // double-counted there on top of its own dedicated REUSING row.
+        st.num_exec.0 += local.num_exec.0 - local.reusing_num_exec.0;
         self.num_exec += local.num_exec;
         // if has new
-        st.num_inputs += local.num_inputs;
+        st.num_inputs.0 += local.num_inputs.0 - local.reusing_num_inputs.0;
         self.num_inputs += local.num_inputs;
-        st.num_hangs += local.num_hangs;
+        st.num_hangs.0 += local.num_hangs.0 - local.reusing_num_hangs.0;
         self.num_hangs += local.num_hangs;
-        st.num_crashes += local.num_crashes;
+        st.num_crashes.0 += local.num_crashes.0 - local.reusing_num_crashes.0;
         self.num_crashes += local.num_crashes;
 
         //local.clear();

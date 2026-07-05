@@ -1,5 +1,28 @@
 use angora_common::tag::TagSeg;
 
+// Merges adjacent segments (current.end == next.begin) into one wider segment,
+// e.g. [0..2, 2..4, 7..8] -> [0..4, 7..8]. Assumes offsets is sorted by begin.
+pub fn merge_continuous_segments(offsets: &Vec<TagSeg>) -> Vec<TagSeg> {
+    if offsets.is_empty() {
+        return vec![];
+    }
+
+    let mut merged = Vec::new();
+    let mut current = offsets[0];
+
+    for i in 1..offsets.len() {
+        let next = offsets[i];
+        if current.end == next.begin {
+            current.end = next.end;
+        } else {
+            merged.push(current);
+            current = next;
+        }
+    }
+    merged.push(current);
+    merged
+}
+
 pub fn merge_offsets(v1: &Vec<TagSeg>, v2: &Vec<TagSeg>) -> Vec<TagSeg> {
     if v1.len() == 0 {
         return v2.clone();

@@ -12,7 +12,7 @@ pub use self::label_pattern_tracker::{
   print_stats as print_pattern_stats,
   save_to_text,
   LABEL_PATTERN_MAP,
-  extract_pattern_merged,
+  extract_pattern,
   CondRecord,
   get_next_records,
 };

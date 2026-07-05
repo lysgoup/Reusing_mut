@@ -3,6 +3,7 @@ use std::sync::Mutex;
 use lazy_static::lazy_static;
 use angora_common::tag::TagSeg;
 use crate::cond_stmt::CondStmt;
+use crate::mut_input::offsets::merge_continuous_segments;
 use std::fs::File;
 use std::io::{self, Write};
 use std::path::Path;
@@ -36,41 +37,11 @@ pub fn extract_pattern(offsets: &Vec<TagSeg>) -> LabelPattern {
   offsets.iter().map(|seg| seg.end - seg.begin).collect()
 }
 
-fn merge_continuous_segments(offsets: &Vec<TagSeg>) -> Vec<TagSeg> {
-  if offsets.is_empty() {
-      return vec![];
-  }
-
-  let mut merged = Vec::new();
-  let mut current = offsets[0];
-
-  for i in 1..offsets.len() {
-      let next = offsets[i];
-
-      // if current.end == next.begin && current.sign == next.sign {
-      if current.end == next.begin {
-          current.end = next.end;
-      } else {
-          merged.push(current);
-          current = next;
-      }
-  }
-
-  merged.push(current);
-
-  merged
-}
-
-pub fn extract_pattern_merged(offsets: &Vec<TagSeg>) -> LabelPattern {
-  let merged = merge_continuous_segments(offsets);
-  merged.iter().map(|seg| seg.end - seg.begin).collect()
-}
-
-fn extract_value_from_label(offsets: &Vec<TagSeg>, input_buf: &Vec<u8>) -> Vec<Vec<u8>> {
-  let merged_offsets = merge_continuous_segments(offsets);
+// Extracts one critical-value slice per (already merged) segment from input_buf.
+fn extract_value_from_merged(merged_offsets: &Vec<TagSeg>, input_buf: &Vec<u8>) -> Vec<Vec<u8>> {
   let mut critical_values = Vec::new();
 
-  for seg in &merged_offsets {
+  for seg in merged_offsets {
       let begin = seg.begin as usize;
       let end = seg.end as usize;
 
@@ -98,11 +69,11 @@ fn create_record_for_offsets(
       return;
   }
 
-  // 병합된 세그먼트 추출
+  // 병합된 세그먼트 추출 (한 번만 계산해서 아래에서 재사용)
   let merged_offsets = merge_continuous_segments(offsets);
-  let pattern = extract_pattern_merged(offsets);
+  let pattern = extract_pattern(&merged_offsets);
   let input_buf = depot.get_input_buf(cond.base.belong as usize);
-  let critical_values = extract_value_from_label(offsets, &input_buf);
+  let critical_values = extract_value_from_merged(&merged_offsets, &input_buf);
 
   // 1. 전체 패턴 레코드 생성 (기존 로직)
   create_single_record(
@@ -249,7 +220,7 @@ pub fn save_to_text(path: &Path) -> io::Result<()> {
 }
 
 pub fn get_next_records(
-  cond: &mut CondStmt,
+  record_index: &mut usize,
   pattern: &LabelPattern,
   iterations: usize
 ) -> Option<Vec<CondRecord>> {
@@ -258,14 +229,14 @@ pub fn get_next_records(
     let records = map.get(pattern)?;
 
     let total = records.len();
-    let start = cond.reusing_record_index;
+    let start = *record_index;
 
     if start >= total {
         return None;
     }
 
     let end = (start + iterations).min(total);
-    cond.reusing_record_index = end;
+    *record_index = end;
 
     records[start..end].to_vec()
   };

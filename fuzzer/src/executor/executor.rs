@@ -292,7 +292,7 @@ impl Executor {
             let id = self.depot.save(status, &buf, cmpid);
 
             if status == StatusType::Normal && !self.is_dry_run && self.cmd.analysis_mode {
-                let detail = if self.current_mut_op == "Reusing" {
+                let detail = if self.current_mut_op == "Reusing" || self.current_mut_op == "Reusing+Det" {
                     self.current_reusing_detail.iter()
                         .map(|(begin, end, val)| {
                             let hex: String = val.iter().map(|b| format!("{:02x}", b)).collect();

@@ -8,6 +8,7 @@ pub struct ReusingStats {
     pub num_inputs: Counter,
     pub num_hangs: Counter,
     pub num_crashes: Counter,
+    pub total_time: TimeDuration,
 }
 
 impl ReusingStats {
@@ -24,7 +25,7 @@ impl fmt::Display for ReusingStats {
             "CONDS: {}, EXEC: {}, TIME: {}, FOUND: {} - {} - {}",
             zero_counter,  // reusing은 CONDS 0
             self.num_exec,
-            "[--:--:--]",  // TIME은 추적 안 함
+            self.total_time,
             self.num_inputs,
             self.num_hangs,
             self.num_crashes,
