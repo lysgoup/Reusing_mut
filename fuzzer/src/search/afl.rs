@@ -5,6 +5,8 @@
 
 use super::*;
 use rand::{self, distributions::Uniform, Rng};
+use rand::seq::SliceRandom;
+use crate::depot::LABEL_PATTERN_MAP;
 
 static IDX_TO_SIZE: [usize; 4] = [1, 2, 4, 8];
 
@@ -49,10 +51,12 @@ impl<'a> AFLFuzz<'a> {
         } else {
             256
         };
+        // +1 over the historical 6/8 to make room for case 6 (reusing-pool value),
+        // which stays available either way since it doesn't change the input length.
         let max_choice = if config::ENABLE_MICRO_RANDOM_LEN {
-            8
+            9
         } else {
-            6
+            7
         };
 
         let choice_range = Uniform::new(0, max_choice);
@@ -194,6 +198,28 @@ impl<'a> AFLFuzz<'a> {
                     mutated_offsets.push(byte_idx);
                 },
                 6 => {
+                    // Splat a value pulled from LABEL_PATTERN_MAP (critical values
+                    // reusing has collected from other conditions elsewhere in the
+                    // run) at a random position -- same idea as case 4's fixed
+                    // interesting-value list, but sourced from real observed values
+                    // instead of hardcoded magic numbers. No-op (silently) when
+                    // reusing is disabled or nothing has been collected yet, since
+                    // LABEL_PATTERN_MAP is simply empty in that case.
+                    let n: u32 = rng.gen_range(0, 3);
+                    let size = IDX_TO_SIZE[n as usize];
+                    if byte_len > size as u32 {
+                        if let Some(value) = pick_random_reusing_value(size) {
+                            let byte_idx: u32 = rng.gen_range(0, byte_len - size as u32);
+                            let copy_len = value.len().min(size);
+                            buf[byte_idx as usize..byte_idx as usize + copy_len]
+                                .copy_from_slice(&value[..copy_len]);
+                            for i in 0..copy_len as u32 {
+                                mutated_offsets.push(byte_idx + i);
+                            }
+                        }
+                    }
+                },
+                7 => {
                     // delete bytes
                     let remove_len: u32 = rng.gen_range(1, 5);
                     if byte_len > remove_len {
@@ -206,7 +232,7 @@ impl<'a> AFLFuzz<'a> {
                         }
                     }
                 },
-                7 => {
+                8 => {
                     // insert bytes
                     let add_len = rng.gen_range(1, 5);
                     let new_len = byte_len + add_len;
@@ -291,6 +317,20 @@ impl<'a> AFLFuzz<'a> {
         }
     }
 }
+
+// Picks a random critical value of the given size from LABEL_PATTERN_MAP,
+// without regard to which condition originally produced it -- unlike reusing's
+// own use of this map, there's no taint offset here to match against, so this
+// just treats the pool as a source of "known interesting" values for havoc.
+fn pick_random_reusing_value(size: usize) -> Option<Vec<u8>> {
+    let pattern = vec![size as u32];
+    let map = LABEL_PATTERN_MAP.lock().unwrap();
+    let records = map.get(&pattern)?;
+    let mut rng = rand::thread_rng();
+    let record = records.choose(&mut rng)?;
+    record.critical_values.first().cloned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
