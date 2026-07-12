@@ -6,7 +6,8 @@
 use super::*;
 use rand::{self, distributions::Uniform, Rng};
 use rand::seq::SliceRandom;
-use crate::depot::LABEL_PATTERN_MAP;
+use crate::depot::{LABEL_PATTERN_MAP, extract_pattern};
+use crate::mut_input::offsets::merge_continuous_segments;
 
 static IDX_TO_SIZE: [usize; 4] = [1, 2, 4, 8];
 
@@ -51,13 +52,14 @@ impl<'a> AFLFuzz<'a> {
         } else {
             256
         };
-        // +1 over the historical 6/8 to make room for case 6 (reusing-pool value),
-        // which stays available either way since it doesn't change the input length.
-        let max_choice = if config::ENABLE_MICRO_RANDOM_LEN {
-            9
-        } else {
-            7
-        };
+        let use_micro_random_len = config::ENABLE_MICRO_RANDOM_LEN;
+        let enable_reusing = self.handler.executor.cmd.enable_reusing;
+        // Historical choice count is 6 (base ops) or 8 (with delete/insert). The
+        // reusing-pool splat (case `base_choice`) only gets a slot on top of that
+        // when --enable-reusing is on, since it's a no-op otherwise (the pattern
+        // map stays empty when reusing is disabled).
+        let base_choice = if use_micro_random_len { 8 } else { 6 };
+        let max_choice = if enable_reusing { base_choice + 1 } else { base_choice };
 
         let choice_range = Uniform::new(0, max_choice);
 
@@ -69,7 +71,7 @@ impl<'a> AFLFuzz<'a> {
                 break;
             }
             let mut buf = self.handler.buf.clone();
-            let mutated_offsets = self.havoc_flip(&mut buf, max_stacking, choice_range);
+            let mutated_offsets = self.havoc_flip(&mut buf, max_stacking, choice_range, base_choice, enable_reusing);
             self.handler.clear_mutated_offsets();
             for offset in mutated_offsets {
                 self.handler.record_mutated_offset(offset);
@@ -140,14 +142,59 @@ impl<'a> AFLFuzz<'a> {
     }
 
     // TODO both endian?
-    fn havoc_flip(&self, buf: &mut Vec<u8>, max_stacking: usize, choice_range: Uniform<u32>) -> Vec<u32> {
+    fn havoc_flip(
+        &self,
+        buf: &mut Vec<u8>,
+        max_stacking: usize,
+        choice_range: Uniform<u32>,
+        reusing_choice: u32,
+        enable_reusing: bool,
+    ) -> Vec<u32> {
         let mut rng = rand::thread_rng();
         let mut byte_len = buf.len() as u32;
         let use_stacking = 1 + rng.gen_range(0, max_stacking);
         let mut mutated_offsets = Vec::new();
 
         for _ in 0..use_stacking {
-            match rng.sample(choice_range) {
+            let choice = rng.sample(choice_range);
+
+            // Reusing gets a slot past the base ops (and past delete/insert when those
+            // are enabled) only when --enable-reusing is on; see max_choice in run().
+            if enable_reusing && choice == reusing_choice {
+                // Pick one taint offset group for this input (afl_cond.afl_offset_groups
+                // -- one entry per cond's `offsets`, and a separate entry per cond's
+                // `offsets_opt`; see do_if_has_new in executor.rs). If the pattern map
+                // holds a critical value recorded elsewhere for that same segment-size
+                // pattern, splat it at this group's exact offsets instead of a random
+                // position.
+                if let Some(group) = self.handler.cond.afl_offset_groups.choose(&mut rng) {
+                    let merged = merge_continuous_segments(group);
+                    let pattern = extract_pattern(&merged);
+                    let max_end = merged.iter().map(|s| s.end as usize).max().unwrap_or(0);
+                    if !pattern.is_empty() && max_end <= byte_len as usize {
+                        let record = {
+                            let map = LABEL_PATTERN_MAP.lock().unwrap();
+                            map.get(&pattern).and_then(|records| records.choose(&mut rng).cloned())
+                        };
+                        if let Some(record) = record {
+                            if record.critical_values.len() == merged.len() {
+                                for (seg, value) in merged.iter().zip(record.critical_values.iter()) {
+                                    let begin = seg.begin as usize;
+                                    let end = seg.end as usize;
+                                    let copy_len = value.len().min(end - begin);
+                                    buf[begin..begin + copy_len].copy_from_slice(&value[..copy_len]);
+                                    for i in 0..copy_len as u32 {
+                                        mutated_offsets.push(begin as u32 + i);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+
+            match choice {
                 0 | 1 => {
                     // flip bit
                     let byte_idx: u32 = rng.gen_range(0, byte_len);
@@ -198,28 +245,6 @@ impl<'a> AFLFuzz<'a> {
                     mutated_offsets.push(byte_idx);
                 },
                 6 => {
-                    // Splat a value pulled from LABEL_PATTERN_MAP (critical values
-                    // reusing has collected from other conditions elsewhere in the
-                    // run) at a random position -- same idea as case 4's fixed
-                    // interesting-value list, but sourced from real observed values
-                    // instead of hardcoded magic numbers. No-op (silently) when
-                    // reusing is disabled or nothing has been collected yet, since
-                    // LABEL_PATTERN_MAP is simply empty in that case.
-                    let n: u32 = rng.gen_range(0, 3);
-                    let size = IDX_TO_SIZE[n as usize];
-                    if byte_len > size as u32 {
-                        if let Some(value) = pick_random_reusing_value(size) {
-                            let byte_idx: u32 = rng.gen_range(0, byte_len - size as u32);
-                            let copy_len = value.len().min(size);
-                            buf[byte_idx as usize..byte_idx as usize + copy_len]
-                                .copy_from_slice(&value[..copy_len]);
-                            for i in 0..copy_len as u32 {
-                                mutated_offsets.push(byte_idx + i);
-                            }
-                        }
-                    }
-                },
-                7 => {
                     // delete bytes
                     let remove_len: u32 = rng.gen_range(1, 5);
                     if byte_len > remove_len {
@@ -232,7 +257,7 @@ impl<'a> AFLFuzz<'a> {
                         }
                     }
                 },
-                8 => {
+                7 => {
                     // insert bytes
                     let add_len = rng.gen_range(1, 5);
                     let new_len = byte_len + add_len;
@@ -316,19 +341,6 @@ impl<'a> AFLFuzz<'a> {
             self.add_small_len();
         }
     }
-}
-
-// Picks a random critical value of the given size from LABEL_PATTERN_MAP,
-// without regard to which condition originally produced it -- unlike reusing's
-// own use of this map, there's no taint offset here to match against, so this
-// just treats the pool as a source of "known interesting" values for havoc.
-fn pick_random_reusing_value(size: usize) -> Option<Vec<u8>> {
-    let pattern = vec![size as u32];
-    let map = LABEL_PATTERN_MAP.lock().unwrap();
-    let records = map.get(&pattern)?;
-    let mut rng = rand::thread_rng();
-    let record = records.choose(&mut rng)?;
-    record.critical_values.first().cloned()
 }
 
 #[cfg(test)]

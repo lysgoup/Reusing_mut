@@ -330,13 +330,31 @@ impl Executor {
                 if !crash_or_tmout {
                     let cond_stmts = self.track(id, buf, speed);
                     if cond_stmts.len() > 0 {
+                        // Collect taint offset groups from every cond found for this input, so
+                        // the afl_cond below can carry them. Each cond contributes its own
+                        // `offsets` group and, separately, its own `offsets_opt` group (never
+                        // merged together) -- only bother when reusing is enabled, since it's
+                        // currently the only consumer of this info.
+                        let afl_offset_groups = if self.cmd.enable_afl && self.cmd.enable_reusing {
+                            let mut groups = Vec::new();
+                            for c in &cond_stmts {
+                                if !c.offsets.is_empty() {
+                                    groups.push(c.offsets.clone());
+                                }
+                                if !c.offsets_opt.is_empty() {
+                                    groups.push(c.offsets_opt.clone());
+                                }
+                            }
+                            groups
+                        } else {
+                            vec![]
+                        };
                         // Filter cond_stmts based on mutated offsets
                         self.depot.add_entries_with_filter(cond_stmts, &self.current_mutated_offsets);
                         if self.cmd.enable_afl {
-                            self.depot
-                                .add_entries(vec![cond_stmt::CondStmt::get_afl_cond(
-                                    id, speed, edge_num,
-                                )]);
+                            let mut afl_cond = cond_stmt::CondStmt::get_afl_cond(id, speed, edge_num);
+                            afl_cond.afl_offset_groups = afl_offset_groups;
+                            self.depot.add_entries(vec![afl_cond]);
                         }
                     }
                 }

@@ -11,6 +11,12 @@ pub struct CondStmt {
     pub offsets_opt: Vec<TagSeg>,
     pub variables: Vec<u8>,
 
+    // Per-cond taint offset groups collected for an afl_cond (see get_afl_cond /
+    // do_if_has_new in executor.rs): one entry per cond's `offsets`, and a
+    // separate entry per cond's `offsets_opt` when present, so a group never
+    // mixes the two operands of the same cond together.
+    pub afl_offset_groups: Vec<Vec<TagSeg>>,
+
     pub speed: u32,
     pub is_desirable: bool, // non-convex
     pub is_consistent: bool,
@@ -47,6 +53,7 @@ impl CondStmt {
             offsets: vec![],
             offsets_opt: vec![],
             variables: vec![],
+            afl_offset_groups: vec![],
             speed: 0,
             is_consistent: true,
             is_desirable: true,
@@ -99,6 +106,7 @@ impl CondStmt {
         self.offsets = vec![];
         self.offsets_opt = vec![];
         self.variables = vec![];
+        self.afl_offset_groups = vec![];
     }
 
     pub fn is_discarded(&self) -> bool {
@@ -114,6 +122,7 @@ impl CondStmt {
         afl_cond.speed = speed;
         afl_cond.base.op = defs::COND_AFL_OP;
         afl_cond.base.cmpid = id as u32;
+        afl_cond.base.belong = id as u32;
         afl_cond.base.context = 0;
         afl_cond.base.order = 0;
         afl_cond.base.arg1 = edge_num as u64;
