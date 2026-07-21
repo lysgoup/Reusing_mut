@@ -220,7 +220,7 @@ pub fn save_to_text(path: &Path) -> io::Result<()> {
 }
 
 pub fn get_next_records(
-  record_index: &mut usize,
+  cond: &mut CondStmt,
   pattern: &LabelPattern,
   iterations: usize
 ) -> Option<Vec<CondRecord>> {
@@ -229,14 +229,14 @@ pub fn get_next_records(
     let records = map.get(pattern)?;
 
     let total = records.len();
-    let start = *record_index;
+    let start = cond.reusing_record_index;
 
     if start >= total {
         return None;
     }
 
     let end = (start + iterations).min(total);
-    *record_index = end;
+    cond.reusing_record_index = end;
 
     records[start..end].to_vec()
   };

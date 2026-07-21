@@ -10,15 +10,6 @@ pub struct LocalStats {
     pub num_hangs: Counter,
     pub num_crashes: Counter,
 
-    // Portion of num_exec/num_inputs/num_hangs/num_crashes above that came from
-    // reusing. num_exec etc. still include it (so grand totals count everything),
-    // but sync_from_local() subtracts this out of the per-fuzz-type (Explore/
-    // Exploit/...) breakdown so reusing isn't double-counted into those rows.
-    pub reusing_num_exec: Counter,
-    pub reusing_num_inputs: Counter,
-    pub reusing_num_hangs: Counter,
-    pub reusing_num_crashes: Counter,
-
     pub track_time: TimeDuration,
     pub start_time: TimeIns,
 
@@ -47,11 +38,6 @@ impl LocalStats {
         self.num_hangs = Default::default();
         self.num_crashes = Default::default();
 
-        self.reusing_num_exec = Default::default();
-        self.reusing_num_inputs = Default::default();
-        self.reusing_num_hangs = Default::default();
-        self.reusing_num_crashes = Default::default();
-
         self.start_time = Default::default();
         self.track_time = Default::default();
     }
@@ -79,5 +65,13 @@ impl LocalStats {
             num_hangs: self.num_hangs,
             num_crashes: self.num_crashes,
         }
+    }
+
+    // 백업으로부터 복원
+    pub fn restore(&mut self, snapshot: &LocalStatsSnapshot) {
+        self.num_exec = snapshot.num_exec;
+        self.num_inputs = snapshot.num_inputs;
+        self.num_hangs = snapshot.num_hangs;
+        self.num_crashes = snapshot.num_crashes;
     }
 }
