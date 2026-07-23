@@ -143,16 +143,8 @@ pub fn fuzz_loop(
                     LenFuzz::new(handler).run();
                 },
                 FuzzType::CmpFnFuzz => {
-                    let solved_by_reusing = if enable_reusing {
-                        handler.executor.current_mut_op = "Reusing";
-                        apply_reusing_mutation(&mut handler, 50)
-                    } else {
-                        false
-                    };
-                    if !solved_by_reusing {
-                        handler.executor.current_mut_op = "CmpFn";
-                        FnFuzz::new(handler).run();
-                    }
+                    handler.executor.current_mut_op = "CmpFn";
+                    FnFuzz::new(handler).run();
                 },
                 FuzzType::OtherFuzz => {
                     warn!("Unknown fuzz type!!");

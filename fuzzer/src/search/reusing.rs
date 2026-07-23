@@ -1,8 +1,7 @@
 use crate::depot::{LABEL_PATTERN_MAP, extract_pattern, CondRecord, get_next_records};
 use crate::search::SearchHandler;
-use crate::mut_input::offsets::merge_offsets;
 use rand::seq::SliceRandom;
-use angora_common::{config, tag::TagSeg};
+use angora_common::tag::TagSeg;
 use crate::stats::REUSING_STATS;
 
 pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) -> bool {
@@ -10,59 +9,57 @@ pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) ->
         return false;
     }
 
-    if handler.cond.offsets.is_empty() {
-        return false;
-    }
-
     let snapshot = handler.executor.local_stats.snapshot();
     let buf_backup = handler.buf.clone();
 
-    let mut best_f = u64::MAX;
-    let mut best_buf = handler.buf.clone();
+    let pattern = extract_pattern(&merge_continuous_segments(&handler.cond.offsets));
+    if pattern.is_empty() {
+        return false;
+    }
+
     let mut execution_count = 0;
+    let map = LABEL_PATTERN_MAP.lock().unwrap();
+    let total_records = if let Some(records) = map.get(&pattern) {
+        records.len()
+    } else {
+        0
+    };
+    drop(map);
 
-    let primary_offsets = handler.cond.offsets.clone();
-    let opt_offsets = handler.cond.offsets_opt.clone();
-
-    // Phase A: primary offsets
-    execution_count += run_reusing_phase(handler, iterations, &mut best_f, &mut best_buf);
-
-    // Phase B: offsets_opt
-    if !opt_offsets.is_empty() && !handler.cond.is_done() {
-        handler.cond.offsets = opt_offsets.clone();
-        std::mem::swap(
-            &mut handler.cond.reusing_record_index,
-            &mut handler.cond.reusing_record_index_opt,
+    if handler.cond.reusing_record_index >= total_records {
+        info!(
+            "[Reusing] Pattern {:?}: All records already used (index={}/{}), skipping original reusing",
+            pattern, handler.cond.reusing_record_index, total_records
         );
+    } else {
+        if let Some(selected_records) = get_next_records(&mut handler.cond, &pattern, iterations) {
+            let merged_offsets = merge_continuous_segments(&handler.cond.offsets);
 
-        execution_count += run_reusing_phase(handler, iterations, &mut best_f, &mut best_buf);
+            for record in selected_records.iter() {
+                if handler.is_stopped_or_skip() {
+                    break;
+                }
 
-        std::mem::swap(
-            &mut handler.cond.reusing_record_index,
-            &mut handler.cond.reusing_record_index_opt,
-        );
-        handler.cond.offsets = primary_offsets.clone();
+                if insert_critical_value_with_merged(handler, record, &merged_offsets) {
+                    handler.executor.current_reusing_detail = merged_offsets
+                        .iter()
+                        .zip(record.critical_values.iter())
+                        .map(|(seg, val)| (seg.begin, seg.end, val.clone()))
+                        .collect();
+                    let buf = handler.buf.clone();
+                    handler.execute(&buf);
+                    execution_count += 1;
+                }
+            }
+        }
     }
 
-    // Phase C: merged offsets (offsets_all)
-    if !opt_offsets.is_empty() && !handler.cond.is_done() {
-        let merged_all = merge_offsets(&primary_offsets, &opt_offsets);
-        handler.cond.offsets = merged_all;
-        std::mem::swap(
-            &mut handler.cond.reusing_record_index,
-            &mut handler.cond.reusing_record_index_all,
-        );
-
-        execution_count += run_reusing_phase(handler, iterations, &mut best_f, &mut best_buf);
-
-        std::mem::swap(
-            &mut handler.cond.reusing_record_index,
-            &mut handler.cond.reusing_record_index_all,
-        );
-        handler.cond.offsets = primary_offsets.clone();
+    if execution_count < iterations && pattern.len() >= 2 {
+        let remaining = iterations - execution_count;
+        let combined_count = try_combined_segments(handler, &pattern, remaining);
+        execution_count += combined_count;
     }
 
-    // reusing 통계 누적
     {
         let mut reusing_stats = REUSING_STATS.lock().unwrap();
         let exec_delta = handler.executor.local_stats.num_exec.0 - snapshot.num_exec.0;
@@ -76,14 +73,7 @@ pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) ->
     }
 
     handler.executor.local_stats.restore(&snapshot);
-
-    if best_f < u64::MAX {
-        handler.buf = best_buf;
-    } else {
-        handler.buf = buf_backup;
-    }
-
-    handler.reset_phase();
+    handler.buf = buf_backup;
 
     if handler.cond.is_done() {
         return true;
@@ -91,108 +81,7 @@ pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) ->
     false
 }
 
-// 현재 cond.offsets 기준으로 reusing을 수행하고 실행 횟수를 반환한다.
-// best_f / best_buf는 모든 phase에 걸쳐 공유된다.
-fn run_reusing_phase(
-    handler: &mut SearchHandler,
-    iterations: usize,
-    best_f: &mut u64,
-    best_buf: &mut Vec<u8>,
-) -> usize {
-    let pattern = extract_pattern(&merge_continuous_segments(&handler.cond.offsets));
-    if pattern.is_empty() {
-        return 0;
-    }
-
-    let mut execution_count = 0;
-
-    let map = LABEL_PATTERN_MAP.lock().unwrap();
-    let total_records = if let Some(records) = map.get(&pattern) {
-        records.len()
-    } else {
-        0
-    };
-    drop(map);
-
-    if handler.cond.reusing_record_index >= total_records {
-        info!(
-            "[Reusing] Pattern {:?}: All records already used (index={}/{}), skipping",
-            pattern, handler.cond.reusing_record_index, total_records
-        );
-    } else {
-        if let Some(selected_records) = get_next_records(&mut handler.cond, &pattern, iterations) {
-            let merged_offsets = merge_continuous_segments(&handler.cond.offsets);
-
-            for record in selected_records.iter() {
-                handler.reset_phase();
-                if handler.is_stopped() {
-                    break;
-                }
-
-                if insert_critical_value_with_merged(handler, record, &merged_offsets) {
-                    handler.executor.current_reusing_detail = merged_offsets
-                        .iter()
-                        .zip(record.critical_values.iter())
-                        .map(|(seg, val)| (seg.begin, seg.end, val.clone()))
-                        .collect();
-
-                    let f = handler.execute_cond_direct();
-                    execution_count += 1;
-
-                    if f < *best_f {
-                        *best_f = f;
-                        *best_buf = handler.buf.clone();
-                        let input = handler.get_f_input();
-                        handler.cond.variables = input.get_value();
-                    }
-
-                    if !handler.cond.is_done() {
-                        run_det_for_coverage(handler);
-                    }
-                }
-
-                if handler.cond.is_done() {
-                    break;
-                }
-            }
-        }
-    }
-
-    if execution_count < iterations && pattern.len() >= 2 {
-        let remaining = iterations - execution_count;
-        let combined_count =
-            try_combined_segments(handler, &pattern, remaining, best_f, best_buf);
-        execution_count += combined_count;
-    }
-
-    execution_count
-}
-
-fn run_det_for_coverage(handler: &mut SearchHandler) {
-    let offsets = handler.cond.offsets.clone();
-    for seg in &offsets {
-        handler.record_mutated_range(seg.begin as usize, seg.end as usize);
-    }
-
-    let mut input = handler.get_f_input();
-    let n = std::cmp::min(input.val_len() << 3, config::MAX_SEARCH_EXEC_NUM);
-    for i in 0..n {
-        if handler.cond.is_done() {
-            break;
-        }
-        input.bitflip(i);
-        handler.execute_cond(&input);
-        input.bitflip(i);
-    }
-}
-
-fn try_combined_segments(
-    handler: &mut SearchHandler,
-    pattern: &Vec<u32>,
-    iterations: usize,
-    best_f: &mut u64,
-    best_buf: &mut Vec<u8>,
-) -> usize {
+fn try_combined_segments(handler: &mut SearchHandler, pattern: &Vec<u32>, iterations: usize) -> usize {
     let segment_pools: Vec<Vec<Vec<u8>>> = {
         let map = LABEL_PATTERN_MAP.lock().unwrap();
         pattern
@@ -240,8 +129,7 @@ fn try_combined_segments(
     let mut combined_values: Vec<Vec<u8>> = Vec::with_capacity(pattern.len());
 
     for iter in 0..iterations {
-        handler.reset_phase();
-        if handler.is_stopped() {
+        if handler.is_stopped_or_skip() {
             warn!(
                 "[Reusing] Stopped early at combined iteration {}/{}",
                 iter, iterations
@@ -270,23 +158,9 @@ fn try_combined_segments(
                 .map(|(seg, val)| (seg.begin, seg.end, val.clone()))
                 .collect();
 
-            let f = handler.execute_cond_direct();
+            let buf = handler.buf.clone();
+            handler.execute(&buf);
             execution_count += 1;
-
-            if f < *best_f {
-                *best_f = f;
-                *best_buf = handler.buf.clone();
-                let input = handler.get_f_input();
-                handler.cond.variables = input.get_value();
-            }
-
-            if !handler.cond.is_done() {
-                run_det_for_coverage(handler);
-            }
-        }
-
-        if handler.cond.is_done() {
-            break;
         }
     }
     execution_count

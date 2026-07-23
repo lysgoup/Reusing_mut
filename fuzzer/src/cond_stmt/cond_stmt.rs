@@ -26,8 +26,6 @@ pub struct CondStmt {
     pub linear: bool,
 
     pub reusing_record_index: usize,
-    pub reusing_record_index_opt: usize,
-    pub reusing_record_index_all: usize,
 }
 
 impl PartialEq for CondStmt {
@@ -63,8 +61,6 @@ impl CondStmt {
             num_minimal_optima: 0,
             linear: false,
             reusing_record_index: 0,
-            reusing_record_index_opt: 0,
-            reusing_record_index_all: 0,
         }
     }
 
