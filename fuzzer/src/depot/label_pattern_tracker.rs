@@ -139,6 +139,11 @@ fn create_single_record(
   cond: &CondStmt,
   operand_num: u8,
 ) {
+  // 1바이트 패턴은 재사용 가치가 낮으므로(충돌 多) pool에 저장하지 않음
+  if pattern.len() == 1 && pattern[0] == 1 {
+      return;
+  }
+
   let mut map = LABEL_PATTERN_MAP.lock().unwrap();
 
   // 중복 체크

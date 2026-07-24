@@ -21,6 +21,11 @@ pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) ->
         return false;
     }
 
+    // 대상이 1바이트짜리 조건이면 reusing 가치가 낮으므로 바로 스킵
+    if pattern.len() == 1 && pattern[0] == 1 {
+        return false;
+    }
+
     // 3. reusing 진행
     let mut execution_count = 0;
     let map = LABEL_PATTERN_MAP.lock().unwrap();
