@@ -1,0 +1,13 @@
+[package]
+name = "dtaint_convert"
+version = "0.1.0"
+authors = ["sp1npx <spinpx@gmail.com>"]
+edition = "2018"
+
+[[bin]]
+name = "dtaint_convert"
+path = "src/main.rs"
+
+[dependencies]
+bincode = "1.0"
+angora_common = { path = "../common" }

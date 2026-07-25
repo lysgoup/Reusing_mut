@@ -1,6 +1,7 @@
 [workspace]
 members = [
         "common",
+        "dtaint_convert",
         "fuzzer",
         "runtime_fast",
         "runtime",
