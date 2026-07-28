@@ -343,12 +343,12 @@ impl Executor {
                     let cond_stmts = self.track(id, buf, speed);
                     if cond_stmts.len() > 0 {
                         // Filter cond_stmts based on mutated offsets
-                        self.depot.add_entries_with_filter(cond_stmts, &self.current_mutated_offsets);
+                        self.depot.add_entries_with_filter(cond_stmts, &self.current_mutated_offsets, buf);
                         if self.cmd.enable_afl {
                             self.depot
                                 .add_entries(vec![cond_stmt::CondStmt::get_afl_cond(
                                     id, speed, edge_num,
-                                )]);
+                                )], buf);
                         }
                     }
                 }

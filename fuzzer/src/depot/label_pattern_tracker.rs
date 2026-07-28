@@ -7,7 +7,6 @@ use std::fs::File;
 use std::io::{self, Write};
 use std::path::Path;
 use serde_derive::{Serialize, Deserialize};
-use super::depot::Depot;
 
 pub type LabelPattern = Vec<u32>;
 
@@ -91,7 +90,7 @@ fn extract_value_from_label(offsets: &Vec<TagSeg>, input_buf: &Vec<u8>) -> Vec<V
 fn create_record_for_offsets(
   offsets: &Vec<TagSeg>,
   cond: &CondStmt,
-  depot: &Depot,
+  buf: &Vec<u8>,
   operand_num: u8,
 ) {
   if offsets.is_empty() {
@@ -101,8 +100,7 @@ fn create_record_for_offsets(
   // 병합된 세그먼트 추출
   let merged_offsets = merge_continuous_segments(offsets);
   let pattern = extract_pattern_merged(offsets);
-  let input_buf = depot.get_input_buf(cond.base.belong as usize);
-  let critical_values = extract_value_from_label(offsets, &input_buf);
+  let critical_values = extract_value_from_label(offsets, buf);
 
   // 1. 전체 패턴 레코드 생성 (기존 로직)
   create_single_record(
@@ -168,28 +166,28 @@ fn create_single_record(
   map.entry(pattern.clone()).or_insert_with(Vec::new).push(record);
 }
 
-fn add_single_label_record(cond: &CondStmt, depot: &Depot) {
-    create_record_for_offsets(&cond.offsets, cond, depot, 0);
+fn add_single_label_record(cond: &CondStmt, buf: &Vec<u8>) {
+    create_record_for_offsets(&cond.offsets, cond, buf, 0);
 }
 
-fn add_dual_label_records(cond: &CondStmt, depot: &Depot) {
+fn add_dual_label_records(cond: &CondStmt, buf: &Vec<u8>) {
     if cond.offsets_opt.is_empty() {
         return;
     }
 
-    create_record_for_offsets(&cond.offsets, cond, depot, 1);
-    create_record_for_offsets(&cond.offsets_opt, cond, depot, 2);
+    create_record_for_offsets(&cond.offsets, cond, buf, 1);
+    create_record_for_offsets(&cond.offsets_opt, cond, buf, 2);
 }
 
-pub fn add_cond_to_pattern_map(cond: &CondStmt, depot: &Depot) {
+pub fn add_cond_to_pattern_map(cond: &CondStmt, buf: &Vec<u8>) {
   if cond.base.lb1 > 0 && cond.base.lb2 == 0 {
-      add_single_label_record(cond, depot);
+      add_single_label_record(cond, buf);
   }
   else if cond.base.lb1 == 0 && cond.base.lb2 > 0 {
-      add_single_label_record(cond, depot);
+      add_single_label_record(cond, buf);
   }
   else if cond.base.lb1 > 0 && cond.base.lb2 > 0 {
-      add_dual_label_records(cond, depot);
+      add_dual_label_records(cond, buf);
   }
 }
 
@@ -288,13 +286,13 @@ fn offsets_overlap(taint_offsets: &Vec<TagSeg>, mutated_offsets: &HashSet<u32>) 
 // Add cond to pattern map only if its offsets overlap with mutated offsets
 pub fn add_cond_to_pattern_map_with_filter(
   cond: &CondStmt,
-  depot: &Depot,
+  buf: &Vec<u8>,
   mutated_offsets: &HashSet<u32>
 ) {
   // If mutated_offsets is empty, add without filtering (for initial seeds or non-mutation cases)
   if mutated_offsets.is_empty() {
     debug!("[LabelPattern] mutated_offsets is empty, adding without filter");
-    add_cond_to_pattern_map(cond, depot);
+    add_cond_to_pattern_map(cond, buf);
     return;
   }
 
@@ -310,5 +308,5 @@ pub fn add_cond_to_pattern_map_with_filter(
 
   debug!("[LabelPattern] Overlap found - adding to pattern map");
   // If overlaps, add to pattern map
-  add_cond_to_pattern_map(cond, depot);
+  add_cond_to_pattern_map(cond, buf);
 }

@@ -111,7 +111,7 @@ impl Depot {
             })
     }
 
-    pub fn add_entries(&self, conds: Vec<CondStmt>) {
+    pub fn add_entries(&self, conds: Vec<CondStmt>, buf: &Vec<u8>) {
         let mut q = match self.queue.lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
@@ -138,7 +138,7 @@ impl Depot {
                         // this indicate that it is explored.
                         if v.0.base.condition != cond.base.condition {
                             if self.enable_reusing {
-                                label_pattern_tracker::add_cond_to_pattern_map(&cond, self);
+                                label_pattern_tracker::add_cond_to_pattern_map(&cond, buf);
                             }
                             v.0.mark_as_done();
                             q.change_priority(&cond, QPriority::done());
@@ -155,7 +155,7 @@ impl Depot {
                 } else {
                     let priority = QPriority::init(cond.base.op);
                     if self.enable_reusing {
-                        label_pattern_tracker::add_cond_to_pattern_map(&cond, self);
+                        label_pattern_tracker::add_cond_to_pattern_map(&cond, buf);
                     }
                     q.push(cond, priority);
 
@@ -167,7 +167,7 @@ impl Depot {
         }
     }
 
-    pub fn add_entries_with_filter(&self, conds: Vec<CondStmt>, mutated_offsets: &HashSet<u32>) {
+    pub fn add_entries_with_filter(&self, conds: Vec<CondStmt>, mutated_offsets: &HashSet<u32>, buf: &Vec<u8>) {
         let mut q = match self.queue.lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
@@ -184,7 +184,7 @@ impl Depot {
                         // this indicate that it is explored.
                         if v.0.base.condition != cond.base.condition {
                             if self.enable_reusing {
-                                label_pattern_tracker::add_cond_to_pattern_map_with_filter(&cond, self, mutated_offsets);
+                                label_pattern_tracker::add_cond_to_pattern_map_with_filter(&cond, buf, mutated_offsets);
                             }
                             v.0.mark_as_done();
                             q.change_priority(&cond, QPriority::done());
@@ -201,7 +201,7 @@ impl Depot {
                 } else {
                     let priority = QPriority::init(cond.base.op);
                     if self.enable_reusing {
-                        label_pattern_tracker::add_cond_to_pattern_map_with_filter(&cond, self, mutated_offsets);
+                        label_pattern_tracker::add_cond_to_pattern_map_with_filter(&cond, buf, mutated_offsets);
                     }
                     q.push(cond, priority);
 
