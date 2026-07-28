@@ -92,20 +92,38 @@ pub fn fuzz_main(
     let num_normal = executor.local_stats.num_inputs.0;
     let num_total = executor.local_stats.num_exec.0;
     let track_skipped_speed = executor.dryrun_track_skipped_speed;
-    let track_skipped_memory = executor.dryrun_track_skipped_memory;
+    let track_skipped_unstable_memory = executor.dryrun_track_skipped_unstable_memory;
     let dryrun_log_path = angora_out_dir.join("dryrun_log.txt");
     let dryrun_log_result = (|| -> std::io::Result<()> {
         use std::io::Write;
         let mut f = fs::File::create(&dryrun_log_path)?;
-        writeln!(f, "total_executed: {}", num_total)?;
+        writeln!(f, "seed_files_found: {}", executor.dryrun_seed_files_found)?;
+        writeln!(f, "discarded_too_long: {}", executor.dryrun_too_long_count)?;
+        writeln!(f, "discarded_too_long_names:")?;
+        for name in &executor.dryrun_too_long_names {
+            writeln!(f, "  {}", name)?;
+        }
+        writeln!(f, "try_fast_mode_execution: {}", num_total)?;
+        writeln!(f, "fast_mode_executed: {}", num_total - executor.dryrun_forkserver_error_count)?;
+        writeln!(f, "forkserver_error: {}", executor.dryrun_forkserver_error_count)?;
+        writeln!(f, "forkserver_error_names:")?;
+        for name in &executor.dryrun_forkserver_error_names {
+            writeln!(f, "  {}", name)?;
+        }
         writeln!(f, "normal: {}", num_normal)?;
         writeln!(f, "hang: {}", num_hangs)?;
         writeln!(f, "crash: {}", num_crashes)?;
-        writeln!(f, "discarded_too_long: {}", executor.dryrun_discarded_count)?;
-        writeln!(f, "forkserver_error: {}", executor.dryrun_forkserver_error_count)?;
-        writeln!(f, "track_skipped_total: {}", track_skipped_speed + track_skipped_memory)?;
+        writeln!(f, "track_skipped_total: {}", track_skipped_speed + track_skipped_unstable_memory)?;
         writeln!(f, "track_skipped_speed: {}", track_skipped_speed)?;
-        writeln!(f, "track_skipped_memory: {}", track_skipped_memory)?;
+        writeln!(f, "track_skipped_speed_names:")?;
+        for name in &executor.dryrun_track_skipped_speed_names {
+            writeln!(f, "  {}", name)?;
+        }
+        writeln!(f, "track_skipped_unstable_memory: {}", track_skipped_unstable_memory)?;
+        writeln!(f, "track_skipped_unstable_memory_names:")?;
+        for name in &executor.dryrun_track_skipped_unstable_memory_names {
+            writeln!(f, "  {}", name)?;
+        }
         Ok(())
     })();
     match dryrun_log_result {

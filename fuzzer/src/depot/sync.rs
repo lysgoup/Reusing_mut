@@ -21,6 +21,7 @@ pub fn sync_depot(executor: &mut Executor, running: Arc<AtomicBool>, dir: &Path)
         .collect();
     entries.sort_by_key(|e| e.file_name());
     info!("Found {} seed files in {:?}", entries.len(), dir);
+    executor.dryrun_seed_files_found = entries.len();
     for entry in entries {
         if !running.load(Ordering::SeqCst) {
             break;
@@ -30,12 +31,12 @@ pub fn sync_depot(executor: &mut Executor, running: Arc<AtomicBool>, dir: &Path)
         if file_len < config::MAX_INPUT_LEN {
             // info!("Executing seed: {:?}", entry.file_name());
             let buf = read_from_file(&path);
-            if !executor.run_sync(&buf) {
-                executor.dryrun_forkserver_error_count += 1;
-            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            executor.run_sync(&buf, &name);
         } else {
             warn!("Seed discarded, too long: {:?} (size={}, MAX_INPUT_LEN={})", entry.file_name(), file_len, config::MAX_INPUT_LEN);
-            executor.dryrun_discarded_count += 1;
+            executor.dryrun_too_long_count += 1;
+            executor.dryrun_too_long_names.push(entry.file_name().to_string_lossy().into_owned());
         }
     }
 
@@ -48,13 +49,13 @@ pub fn sync_depot(executor: &mut Executor, running: Arc<AtomicBool>, dir: &Path)
         num_hangs,
         num_crashes,
         executor.dryrun_forkserver_error_count,
-        executor.dryrun_discarded_count,
+        executor.dryrun_too_long_count,
     );
     info!(
         "dryrun track skipped: {} (speed: {}, memory: {})",
-        executor.dryrun_track_skipped_speed + executor.dryrun_track_skipped_memory,
+        executor.dryrun_track_skipped_speed + executor.dryrun_track_skipped_unstable_memory,
         executor.dryrun_track_skipped_speed,
-        executor.dryrun_track_skipped_memory,
+        executor.dryrun_track_skipped_unstable_memory,
     );
     executor.update_log();
 }
@@ -131,7 +132,8 @@ fn sync_one_afl_dir(
                         let file_len = fs::metadata(path).unwrap().len() as usize;
                         if file_len < config::MAX_INPUT_LEN {
                             let buf = read_from_file(path);
-                            executor.run_sync(&buf);
+                            let name = entry.file_name().to_string_lossy().into_owned();
+                            executor.run_sync(&buf, &name);
                         }
                         if id > max_id {
                             max_id = id;

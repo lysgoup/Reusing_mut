@@ -45,9 +45,14 @@ pub struct Executor {
     pub current_reusing_detail: Vec<(u32, u32, Vec<u8>)>,
     analysis_entries: Vec<(usize, usize, &'static str, String)>,
     pub dryrun_track_skipped_speed: usize,
-    pub dryrun_track_skipped_memory: usize,
-    pub dryrun_discarded_count: usize,
+    pub dryrun_track_skipped_speed_names: Vec<String>,
+    pub dryrun_track_skipped_unstable_memory: usize,
+    pub dryrun_track_skipped_unstable_memory_names: Vec<String>,
+    pub dryrun_seed_files_found: usize,
+    pub dryrun_too_long_count: usize,
+    pub dryrun_too_long_names: Vec<String>,
     pub dryrun_forkserver_error_count: usize,
+    pub dryrun_forkserver_error_names: Vec<String>,
 }
 
 impl Executor {
@@ -134,9 +139,14 @@ impl Executor {
             current_reusing_detail: Vec::new(),
             analysis_entries: Vec::new(),
             dryrun_track_skipped_speed: 0,
-            dryrun_track_skipped_memory: 0,
-            dryrun_discarded_count: 0,
+            dryrun_track_skipped_speed_names: Vec::new(),
+            dryrun_track_skipped_unstable_memory: 0,
+            dryrun_track_skipped_unstable_memory_names: Vec::new(),
+            dryrun_seed_files_found: 0,
+            dryrun_too_long_count: 0,
+            dryrun_too_long_names: Vec::new(),
             dryrun_forkserver_error_count: 0,
+            dryrun_forkserver_error_names: Vec::new(),
         }
     }
 
@@ -235,7 +245,7 @@ impl Executor {
         skip |= self.check_invariable(output, cond);
         self.check_consistent(output, cond);
 
-        self.do_if_has_new(buf, status, explored, cond.base.cmpid);
+        self.do_if_has_new(buf, status, explored, cond.base.cmpid, "");
         status = self.check_timeout(status, cond);
 
         if skip {
@@ -274,7 +284,7 @@ impl Executor {
         skip
     }
 
-    fn do_if_has_new(&mut self, buf: &Vec<u8>, status: StatusType, _explored: bool, cmpid: u32) {
+    fn do_if_has_new(&mut self, buf: &Vec<u8>, status: StatusType, _explored: bool, cmpid: u32, name: &str) {
         // new edge: one byte in bitmap
         let (has_new_path, has_new_edge, edge_num) = self.branches.has_new(status);
 
@@ -320,12 +330,14 @@ impl Executor {
                     );
                     if self.is_dry_run {
                         self.dryrun_track_skipped_speed += 1;
+                        self.dryrun_track_skipped_speed_names.push(name.to_string());
                     }
                     return;
                 }
                 let crash_or_tmout = self.try_unlimited_memory(buf, cmpid);
                 if crash_or_tmout && self.is_dry_run {
-                    self.dryrun_track_skipped_memory += 1;
+                    self.dryrun_track_skipped_unstable_memory += 1;
+                    self.dryrun_track_skipped_unstable_memory_names.push(name.to_string());
                 }
                 if !crash_or_tmout {
                     let cond_stmts = self.track(id, buf, speed);
@@ -347,11 +359,11 @@ impl Executor {
     pub fn run(&mut self, buf: &Vec<u8>, cond: &mut cond_stmt::CondStmt) -> StatusType {
         self.run_init();
         let status = self.run_inner(buf);
-        self.do_if_has_new(buf, status, false, 0);
+        self.do_if_has_new(buf, status, false, 0, "");
         self.check_timeout(status, cond)
     }
 
-    pub fn run_sync(&mut self, buf: &Vec<u8>) -> bool {
+    pub fn run_sync(&mut self, buf: &Vec<u8>, name: &str) -> bool {
         self.is_dry_run = true;
         self.run_init();
         let mut status = self.run_inner(buf);
@@ -363,12 +375,14 @@ impl Executor {
             status = self.run_inner(buf);
             if status == StatusType::Error {
                 warn!("Dry run retry also failed, skipping seed");
+                self.dryrun_forkserver_error_count += 1;
+                self.dryrun_forkserver_error_names.push(name.to_string());
                 self.is_dry_run = false;
                 return false;
             }
         }
 
-        self.do_if_has_new(buf, status, false, 0);
+        self.do_if_has_new(buf, status, false, 0, name);
         self.is_dry_run = false;
         true
     }
