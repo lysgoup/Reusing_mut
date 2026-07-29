@@ -186,6 +186,12 @@ pub fn fuzz_main(
         }
         info!("Pattern map saved successfully!");
 
+        let magic_bytes_text = angora_out_dir.join("magic_byte_map.txt");
+        if let Err(e) = depot::save_magic_bytes_to_text(&magic_bytes_text) {
+            warn!("Failed to save magic byte map (text): {:?}", e);
+        }
+        info!("Magic byte map saved successfully!");
+
         let cmpid_log_source = PathBuf::from("cmpid_log.txt");
         if cmpid_log_source.exists() {
             let cmpid_log_dest = angora_out_dir.join("cmpid_log.txt");

@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use lazy_static::lazy_static;
-use angora_common::tag::TagSeg;
-use crate::cond_stmt::CondStmt;
+use angora_common::{defs, tag::TagSeg};
+use crate::{cond_stmt::CondStmt, mut_input};
 use std::fs::File;
 use std::io::{self, Write};
 use std::path::Path;
@@ -29,6 +29,77 @@ pub struct CondRecord {
 lazy_static! {
     pub static ref LABEL_PATTERN_MAP: Mutex<HashMap<LabelPattern, Vec<CondRecord>>> =
       Mutex::new(HashMap::new());
+
+    // magic-byte comparisons (cond.is_magic_byte) are pooled separately from
+    // LABEL_PATTERN_MAP: pattern (tainted-side byte length) ->
+    // (magic constant, taint value at first coverage) pairs.
+    pub static ref MAGIC_BYTE_MAP: Mutex<HashMap<LabelPattern, HashSet<(Vec<u8>, Vec<u8>)>>> =
+      Mutex::new(HashMap::new());
+}
+
+// The magic (constant) side of cond.variables. For FN_OP, cond.variables is
+// [magic_bytes, tainted_bytes] concatenated (see fparser.rs / cmpfn.rs's
+// FnFuzz, which splits it the same way for its diff-adjustment insertion);
+// the magic prefix's length == cond.base.size (track.rs sets size to the
+// OTHER/untainted operand's length). For plain int compares, cond.variables
+// already IS just the magic bytes.
+fn magic_value(cond: &CondStmt) -> &[u8] {
+    if cond.base.op == defs::COND_FN_OP {
+        let magic_len = (cond.base.size as usize).min(cond.variables.len());
+        &cond.variables[..magic_len]
+    } else {
+        &cond.variables
+    }
+}
+
+// Confirm the tainted operand's runtime value is a direct, untransformed copy
+// of the input bytes at cond.offsets before trusting the (magic, tainted)
+// pair as reusable (mirrors AFL++ cmplog's buf==pattern check before it
+// commits to a direct patch).
+//
+// NOTE: for FN_OP this only verifies the VALUE; it does not fix the separate,
+// still-open issue that track.rs's fn-compare hook collapses genuine dual-taint
+// calls (memcmp(tainted_a, tainted_b, n)) into an apparent single label before
+// this cond is even classified as magic-byte.
+fn is_untransformed(cond: &CondStmt, actual_bytes: &[u8]) -> bool {
+    if cond.base.op == defs::COND_FN_OP {
+        let magic_len = magic_value(cond).len();
+        return match cond.variables.get(magic_len..) {
+            Some(tainted_captured) => tainted_captured == actual_bytes,
+            None => true, // variables too short to split, can't verify -> don't block storage
+        };
+    }
+
+    let tainted_arg = if cond.base.lb1 > 0 {
+        cond.base.arg1
+    } else {
+        cond.base.arg2
+    };
+
+    match mut_input::read_as_ule(actual_bytes, cond.base.size as usize) {
+        Some(actual_val) => actual_val == tainted_arg,
+        None => true, // unsupported width, can't verify -> don't block storage
+    }
+}
+
+fn add_magic_byte_record(cond: &CondStmt, buf: &Vec<u8>) {
+    if cond.offsets.is_empty() || cond.variables.is_empty() {
+        return;
+    }
+
+    let actual_bytes: Vec<u8> = extract_value_from_label(&cond.offsets, buf)
+        .into_iter()
+        .flatten()
+        .collect();
+
+    if !is_untransformed(cond, &actual_bytes) {
+        return;
+    }
+
+    let pattern = extract_pattern_merged(&cond.offsets);
+    let magic = magic_value(cond).to_vec();
+    let mut map = MAGIC_BYTE_MAP.lock().unwrap();
+    map.entry(pattern).or_insert_with(HashSet::new).insert((magic, actual_bytes));
 }
 
 pub fn extract_pattern(offsets: &Vec<TagSeg>) -> LabelPattern {
@@ -180,6 +251,11 @@ fn add_dual_label_records(cond: &CondStmt, buf: &Vec<u8>) {
 }
 
 pub fn add_cond_to_pattern_map(cond: &CondStmt, buf: &Vec<u8>) {
+  if cond.is_magic_byte {
+      add_magic_byte_record(cond, buf);
+      return;
+  }
+
   if cond.base.lb1 > 0 && cond.base.lb2 == 0 {
       add_single_label_record(cond, buf);
   }
@@ -243,6 +319,34 @@ pub fn save_to_text(path: &Path) -> io::Result<()> {
   }
 
   info!("[LabelPattern] Saved to {:?}", path);
+  Ok(())
+}
+
+pub fn save_magic_bytes_to_text(path: &Path) -> io::Result<()> {
+  let map = MAGIC_BYTE_MAP.lock().unwrap();
+  let mut file = File::create(path)?;
+
+  writeln!(file, "# Angora Magic Byte Map")?;
+  writeln!(file, "# Generated at: {}", chrono::Local::now())?;
+  writeln!(file, "# Total patterns: {}", map.len())?;
+  writeln!(file, "# Total records: {}", map.values().map(|v| v.len()).sum::<usize>())?;
+  writeln!(file)?;
+
+  let mut sorted_patterns: Vec<_> = map.iter().collect();
+  sorted_patterns.sort_by_key(|(pattern, _)| pattern.clone());
+
+  for (pattern, records) in sorted_patterns {
+      writeln!(file, "Pattern: {:?} (size: {})", pattern, pattern.iter().sum::<u32>())?;
+      writeln!(file, "  Records: {}", records.len())?;
+
+      for (magic, tainted_baseline) in records.iter() {
+        writeln!(file, "        Magic: {:?}", magic)?;
+        writeln!(file, "        Taint baseline: {:?}", tainted_baseline)?;
+      }
+      writeln!(file)?;
+  }
+
+  info!("[MagicByte] Saved to {:?}", path);
   Ok(())
 }
 

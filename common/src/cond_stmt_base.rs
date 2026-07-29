@@ -76,6 +76,18 @@ impl CondStmtBase {
         (self.op & COND_BASIC_MASK) == COND_SW_OP
     }
 
+    // A magic-byte comparison: input bytes checked against a fixed constant.
+    // Either a string/routine compare (strcmp/memcmp/...) or a single-label
+    // (only one side tainted) equality/inequality against a literal.
+    pub fn is_magic_byte_cmp(&self) -> bool {
+        if self.op == COND_FN_OP {
+            return true;
+        }
+        let basic_op = self.op & COND_BASIC_MASK;
+        (basic_op == COND_ICMP_EQ_OP || basic_op == COND_ICMP_NE_OP)
+            && (self.lb1 > 0) != (self.lb2 > 0)
+    }
+
     pub fn is_done(&self) -> bool {
         self.condition == COND_DONE_ST
     }

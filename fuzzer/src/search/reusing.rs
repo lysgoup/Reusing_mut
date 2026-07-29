@@ -1,4 +1,4 @@
-use crate::depot::{LABEL_PATTERN_MAP, extract_pattern_merged, CondRecord, get_next_records};
+use crate::depot::{LABEL_PATTERN_MAP, MAGIC_BYTE_MAP, LabelPattern, extract_pattern_merged, CondRecord, get_next_records};
 use crate::search::SearchHandler;
 use rand::seq::SliceRandom;
 use angora_common::tag::TagSeg;
@@ -21,57 +21,62 @@ pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) ->
         return false;
     }
 
-    // 3. reusing 진행
+    // 3. reusing 진행 -- magic byte 조건문은 MAGIC_BYTE_MAP만, 나머지는 LABEL_PATTERN_MAP만 사용
     let mut execution_count = 0;
-    let map = LABEL_PATTERN_MAP.lock().unwrap();
-    let total_records = if let Some(records) = map.get(&pattern) {
-        records.len()
-    } else {
-        0
-    };
-    drop(map);
 
-    if handler.cond.reusing_record_index >= total_records {
-        info!("[Reusing] Pattern {:?}: All records already used (index={}/{}), skipping original reusing",
-              pattern, handler.cond.reusing_record_index, total_records);
+    if handler.cond.is_magic_byte {
+        execution_count = apply_magic_byte_pool(handler, &pattern, iterations);
     } else {
-        // ===== 1단계: 동일 패턴 시도 =====
-        if let Some(selected_records) = get_next_records(&mut handler.cond, &pattern, iterations) {
-            // let actual_iterations = selected_records.len();
-            //    info!("[Reusing] Exact match: pattern={:?}, trying {} records (sequential)", pattern, actual_iterations);
-            
-            let merged_offsets = merge_continuous_segments(&handler.cond.offsets);
-
-            for (i, record) in selected_records.iter().enumerate() {
-                if handler.is_stopped_or_skip() {
-                    // warn!("[Reusing] Stopped early at iteration {}/{}", i, actual_iterations);
-                    break;
-                }
-    
-                if insert_critical_value_with_merged(handler, record, &merged_offsets) {
-                    handler.executor.current_reusing_detail = merged_offsets.iter()
-                        .zip(record.critical_values.iter())
-                        .map(|(seg, val)| (seg.begin, seg.end, val.clone()))
-                        .collect();
-                    let buf = handler.buf.clone();
-                    handler.execute(&buf);
-                    execution_count += 1;
-                }
-            }
-    
-        //    info!("[Reusing] Exact match complete: executed {} iterations", execution_count);
+        let map = LABEL_PATTERN_MAP.lock().unwrap();
+        let total_records = if let Some(records) = map.get(&pattern) {
+            records.len()
         } else {
-        //    info!("[Reusing] Pattern {:?}: All records exhausted or no records available", pattern);
-        }
-    }
+            0
+        };
+        drop(map);
 
-    // ===== 2단계: 남은 횟수를 개별 세그먼트 조합으로 채우기 =====
-    if execution_count < iterations && pattern.len() >= 2 {
-        let remaining = iterations - execution_count;
-        //  info!("[Reusing] Trying combined segments: {} iterations remaining", remaining);
-        let combined_count = try_combined_segments(handler, &pattern, remaining);
-        execution_count += combined_count;
-        //  info!("[Reusing] Combined complete: executed {} iterations", combined_count);
+        if handler.cond.reusing_record_index >= total_records {
+            info!("[Reusing] Pattern {:?}: All records already used (index={}/{}), skipping original reusing",
+                  pattern, handler.cond.reusing_record_index, total_records);
+        } else {
+            // ===== 1단계: 동일 패턴 시도 =====
+            if let Some(selected_records) = get_next_records(&mut handler.cond, &pattern, iterations) {
+                // let actual_iterations = selected_records.len();
+                //    info!("[Reusing] Exact match: pattern={:?}, trying {} records (sequential)", pattern, actual_iterations);
+
+                let merged_offsets = merge_continuous_segments(&handler.cond.offsets);
+
+                for (i, record) in selected_records.iter().enumerate() {
+                    if handler.is_stopped_or_skip() {
+                        // warn!("[Reusing] Stopped early at iteration {}/{}", i, actual_iterations);
+                        break;
+                    }
+
+                    if insert_critical_value_with_merged(handler, record, &merged_offsets) {
+                        handler.executor.current_reusing_detail = merged_offsets.iter()
+                            .zip(record.critical_values.iter())
+                            .map(|(seg, val)| (seg.begin, seg.end, val.clone()))
+                            .collect();
+                        let buf = handler.buf.clone();
+                        handler.execute(&buf);
+                        execution_count += 1;
+                    }
+                }
+
+            //    info!("[Reusing] Exact match complete: executed {} iterations", execution_count);
+            } else {
+            //    info!("[Reusing] Pattern {:?}: All records exhausted or no records available", pattern);
+            }
+        }
+
+        // ===== 2단계: 남은 횟수를 개별 세그먼트 조합으로 채우기 =====
+        if execution_count < iterations && pattern.len() >= 2 {
+            let remaining = iterations - execution_count;
+            //  info!("[Reusing] Trying combined segments: {} iterations remaining", remaining);
+            let combined_count = try_combined_segments(handler, &pattern, remaining);
+            execution_count += combined_count;
+            //  info!("[Reusing] Combined complete: executed {} iterations", combined_count);
+        }
     }
 
     // 4. reusing 종료 후, local_stats의 증가량을 REUSING_STATS로 복사
@@ -117,6 +122,52 @@ pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) ->
         return true;
     }
     return false;
+}
+
+// magic byte 조건문 전용: 일반 reusing(insert_critical_value_with_merged)과
+// 완전히 동일하게 값을 그대로 buf에 삽입만 함. 차이는 MAGIC_BYTE_MAP에서 후보를
+// 가져온다는 것뿐 -- diff 보정 등은 여기서 하지 않음 (FnFuzz가 별도로 담당).
+fn apply_magic_byte_pool(handler: &mut SearchHandler, pattern: &LabelPattern, iterations: usize) -> usize {
+    let candidates: Vec<Vec<u8>> = {
+        let map = MAGIC_BYTE_MAP.lock().unwrap();
+        map.get(pattern)
+            .map(|set| set.iter().map(|(magic, _tainted_baseline)| magic.clone()).collect())
+            .unwrap_or_default()
+    };
+    if candidates.is_empty() {
+        return 0;
+    }
+
+    let merged_offsets = merge_continuous_segments(&handler.cond.offsets);
+    // is_magic_byte_cmp()는 정확히 한쪽 라벨만 taint된 경우만 통과시키므로
+    // cond.offsets는 하나의 연속 영역으로 병합되는 게 정상.
+    if merged_offsets.len() != 1 {
+        return 0;
+    }
+    let seg = merged_offsets[0];
+    let begin = seg.begin as usize;
+    let end = seg.end as usize;
+
+    let max_end = end.max(handler.buf.len());
+    if max_end > handler.buf.len() {
+        handler.buf.resize(max_end, 0);
+    }
+
+    let mut execution_count = 0;
+    for magic in candidates.iter().take(iterations) {
+        if handler.is_stopped_or_skip() {
+            break;
+        }
+
+        let len = magic.len().min(end - begin);
+        handler.buf[begin..begin + len].copy_from_slice(&magic[..len]);
+        handler.executor.current_reusing_detail = vec![(seg.begin, seg.begin + len as u32, magic[..len].to_vec())];
+
+        let buf = handler.buf.clone();
+        handler.execute(&buf);
+        execution_count += 1;
+    }
+    execution_count
 }
 
 fn try_combined_segments(handler: &mut SearchHandler, pattern: &Vec<u32>, iterations: usize) -> usize {

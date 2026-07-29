@@ -20,6 +20,8 @@ pub struct CondStmt {
     pub linear: bool,
 
     pub reusing_record_index: usize,
+
+    pub is_magic_byte: bool,
 }
 
 impl PartialEq for CondStmt {
@@ -54,12 +56,14 @@ impl CondStmt {
             num_minimal_optima: 0,
             linear: false,
             reusing_record_index: 0,
+            is_magic_byte: false,
         }
     }
 
     pub fn from(cond_base: CondStmtBase) -> Self {
         let mut cond = Self::new();
         cond.base = cond_base;
+        cond.is_magic_byte = cond.base.is_magic_byte_cmp();
         cond
     }
 
