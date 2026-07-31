@@ -26,8 +26,20 @@ pub struct CondRecord {
     pub critical_values: Vec<Vec<u8>>,
 }
 
+#[derive(Debug, Default, Clone)]
+pub struct LabelPatternPool {
+    // O(1) dedup by critical_values (Vec<Vec<u8>> is Hash+Eq since Vec<u8>
+    // is) -- replaces the old design's O(n) linear scan through every
+    // existing record on every single insert (see create_single_record).
+    seen: HashSet<Vec<Vec<u8>>>,
+    // insertion order, so get_next_records can slice forward from
+    // cond.reusing_record_index instead of re-scanning from the start --
+    // same reasoning as MagicBytePool.order (see label_pattern_tracker.rs).
+    pub records: Vec<CondRecord>,
+}
+
 lazy_static! {
-    pub static ref LABEL_PATTERN_MAP: Mutex<HashMap<LabelPattern, Vec<CondRecord>>> =
+    pub static ref LABEL_PATTERN_MAP: Mutex<HashMap<LabelPattern, LabelPatternPool>> =
       Mutex::new(HashMap::new());
 
     // magic-byte comparisons (cond.is_magic_byte) are pooled separately from
@@ -83,6 +95,13 @@ pub struct MagicBytePool {
     // (source cmpid -> file/line via cmpid_track.txt) -- first observation
     // wins, not an exhaustive history.
     pub values: HashMap<Vec<u8>, (ValueOrigin, u32)>,
+    // insertion order of the same distinct values as `values` (pushed once,
+    // exactly when a value is newly inserted into `values`) -- lets reusing
+    // mutation slice forward from a stored index (cond.reusing_record_index,
+    // same field LABEL_PATTERN_MAP's get_next_records uses) instead of
+    // re-collecting the whole pool and re-trying the same HashMap-iteration-
+    // order prefix every call. See apply_magic_byte_pool in search/reusing.rs.
+    pub order: Vec<Vec<u8>>,
 }
 
 // Verify the comparison is untransformed AND derive the magic (constant) value
@@ -155,6 +174,19 @@ fn magic_value_if_untransformed(cond: &CondStmt, actual_bytes: &[u8]) -> Option<
     }
 }
 
+// Inserts into both `values` (dedup + metadata) and `order` (insertion-order
+// list for index-based slicing), but only pushes to `order` when this value
+// is genuinely new to the pool -- mirrors HashMap::entry().or_insert()'s
+// "first observation wins" semantics without duplicating `order` entries for
+// values that are already present.
+fn pool_insert(pool: &mut MagicBytePool, value: Vec<u8>, origin: ValueOrigin, cmpid: u32) {
+    use std::collections::hash_map::Entry;
+    if let Entry::Vacant(e) = pool.values.entry(value.clone()) {
+        e.insert((origin, cmpid));
+        pool.order.push(value);
+    }
+}
+
 fn insert_magic_byte_value(pattern: LabelPattern, magic: Vec<u8>, tainted: Vec<u8>, cmpid: u32) {
     // known loop-counter cmpids skip MAGIC_BYTE_MAP entirely -- flagged by
     // flag_loop_counters_in_batch before this ever runs. LOOP_COUNTER_MAP's
@@ -166,15 +198,15 @@ fn insert_magic_byte_value(pattern: LabelPattern, magic: Vec<u8>, tainted: Vec<u
         // whatever iteration this observation came from, not a real constant
         // -- not useful to keep. the tainted side is a real input byte
         // (e.g. hdr->width), still meaningful, so that one's kept.
-        pool.values.entry(tainted).or_insert((ValueOrigin::Tainted, cmpid));
+        pool_insert(pool, tainted, ValueOrigin::Tainted, cmpid);
         return;
     }
     drop(loop_map);
 
     let mut map = MAGIC_BYTE_MAP.lock().unwrap();
     let pool = map.entry(pattern).or_insert_with(MagicBytePool::default);
-    pool.values.entry(magic).or_insert((ValueOrigin::Magic, cmpid));
-    pool.values.entry(tainted).or_insert((ValueOrigin::Tainted, cmpid));
+    pool_insert(pool, magic, ValueOrigin::Magic, cmpid);
+    pool_insert(pool, tainted, ValueOrigin::Tainted, cmpid);
 }
 
 fn density_flags_loop_counter(values: &HashSet<u64>) -> bool {
@@ -212,8 +244,15 @@ fn flag_loop_counters_in_batch(conds: &Vec<CondStmt>) {
         if !cond.is_magic_byte || cond.base.op == defs::COND_FN_OP {
             continue;
         }
-        let tainted_arg = if cond.base.lb1 > 0 { cond.base.arg1 } else { cond.base.arg2 };
-        by_cmpid.entry(cond.base.cmpid).or_insert_with(HashSet::new).insert(tainted_arg);
+        // check the MAGIC (untainted) side's density -- that's the operand
+        // is_magic_byte_cmp() is trusting to be a constant. The tainted side
+        // is real input data and is EXPECTED to vary widely (e.g. every
+        // distinct character a classifier loop happens to see) -- checking
+        // that side instead would misfire on legitimate character/byte
+        // classification comparisons whose real observed inputs happen to
+        // cluster in a narrow range, not just genuine loop counters.
+        let magic_arg = if cond.base.lb1 > 0 { cond.base.arg2 } else { cond.base.arg1 };
+        by_cmpid.entry(cond.base.cmpid).or_insert_with(HashSet::new).insert(magic_arg);
     }
 
     let newly_flagged: Vec<u32> = by_cmpid
@@ -246,9 +285,12 @@ fn flag_loop_counters_in_batch(conds: &Vec<CondStmt>) {
                 if meta.1 != cmpid {
                     keep.insert(v, meta);
                 } else if meta.0 == ValueOrigin::Tainted {
-                    loop_map.get_mut(&cmpid).unwrap().values.entry(v).or_insert(meta);
+                    let dest = loop_map.get_mut(&cmpid).unwrap();
+                    pool_insert(dest, v, meta.0, meta.1);
                 }
             }
+            // order must track values 1:1 -- drop anything that just moved out.
+            pool.order.retain(|v| keep.contains_key(v));
             pool.values = keep;
         }
         main_map.retain(|_, pool| !pool.values.is_empty());
@@ -464,14 +506,11 @@ fn create_single_record(
   operand_num: u8,
 ) {
   let mut map = LABEL_PATTERN_MAP.lock().unwrap();
+  let pool = map.entry(pattern.clone()).or_insert_with(LabelPatternPool::default);
 
-  // 중복 체크
-  if let Some(existing_records) = map.get(pattern) {
-      for existing in existing_records.iter() {
-          if existing.critical_values == *critical_values {
-              return;
-          }
-      }
+  // 중복 체크 -- O(1), 더 이상 기존 레코드 전체를 선형탐색하지 않음
+  if !pool.seen.insert(critical_values.clone()) {
+      return;
   }
 
   let record = CondRecord {
@@ -489,7 +528,7 @@ fn create_single_record(
       critical_values: critical_values.clone(),
   };
 
-  map.entry(pattern.clone()).or_insert_with(Vec::new).push(record);
+  pool.records.push(record);
 }
 
 fn add_single_label_record(cond: &CondStmt, buf: &Vec<u8>) {
@@ -523,7 +562,7 @@ pub fn add_cond_to_pattern_map(cond: &CondStmt, buf: &Vec<u8>) {
 pub fn get_stats() -> (usize, usize) {
   let map = LABEL_PATTERN_MAP.lock().unwrap();
   let num_patterns = map.len();
-  let num_records: usize = map.values().map(|v| v.len()).sum();
+  let num_records: usize = map.values().map(|p| p.records.len()).sum();
   (num_patterns, num_records)
 }
 
@@ -552,17 +591,17 @@ pub fn save_to_text(path: &Path) -> io::Result<()> {
   writeln!(file, "# Angora Label Pattern Map")?;
   writeln!(file, "# Generated at: {}", chrono::Local::now())?;
   writeln!(file, "# Total patterns: {}", map.len())?;
-  writeln!(file, "# Total records: {}", map.values().map(|v| v.len()).sum::<usize>())?;
+  writeln!(file, "# Total records: {}", map.values().map(|p| p.records.len()).sum::<usize>())?;
   writeln!(file)?;
 
   let mut sorted_patterns: Vec<_> = map.iter().collect();
   sorted_patterns.sort_by_key(|(pattern, _)| pattern.clone());
 
-  for (pattern, records) in sorted_patterns {
+  for (pattern, pool) in sorted_patterns {
       writeln!(file, "Pattern: {:?} (size: {})", pattern, pattern.iter().sum::<u32>())?;
-      writeln!(file, "  Records: {}", records.len())?;
+      writeln!(file, "  Records: {}", pool.records.len())?;
 
-      for (i, record) in records.iter().enumerate() {
+      for (i, record) in pool.records.iter().enumerate() {
         // writeln!(file, "    [{}] cmpid={}, order={}, context={}, op={:#x}, lb1={}, lb2={}, condition={}, belong={}, arg1={}, arg2={}", i, record.cmpid, record.order, record.context, record.op, record.lb1, record.lb2, record.condition, record.belong, record.arg1, record.arg2)?;
         writeln!(file, "        Cmpid: {:?}", record.cmpid)?;
         writeln!(file, "        Offsets: {:?}", record.offsets)?;
@@ -637,7 +676,7 @@ pub fn get_next_records(
 ) -> Option<Vec<CondRecord>> {
   let selected = {
     let map = LABEL_PATTERN_MAP.lock().unwrap();
-    let records = map.get(pattern)?;
+    let records = &map.get(pattern)?.records;
 
     let total = records.len();
     let start = cond.reusing_record_index;

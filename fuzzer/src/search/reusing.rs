@@ -1,4 +1,4 @@
-use crate::depot::{LABEL_PATTERN_MAP, MAGIC_BYTE_MAP, LabelPattern, extract_pattern_merged, CondRecord, get_next_records};
+use crate::depot::{LABEL_PATTERN_MAP, MAGIC_BYTE_MAP, LOOP_COUNTER_MAP, LabelPattern, extract_pattern_merged, CondRecord, get_next_records};
 use crate::search::SearchHandler;
 use rand::seq::SliceRandom;
 use angora_common::tag::TagSeg;
@@ -28,18 +28,23 @@ pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) ->
         return false;
     }
 
-    // 3. reusing 진행 -- magic byte 조건문은 MAGIC_BYTE_MAP만, 나머지는 LABEL_PATTERN_MAP만 사용
+    // 3. reusing 진행 -- magic byte 조건문은 MAGIC_BYTE_MAP만, 나머지는 LABEL_PATTERN_MAP만 사용.
+    //    단, cmpid 자체가 loop counter로 확정된 magic byte 조건문이라면 LOOP_COUNTER_MAP으로
+    //    완전히 대체 -- MAGIC_BYTE_MAP[pattern]엔 이 cmpid의 값이 이미 다 빠져있어서(스윕됨)
+    //    거기서 뭘 뽑아봐야 이 cond 자신과는 무관한 값들뿐이고, LOOP_COUNTER_MAP[cmpid]엔
+    //    바로 이 cond 자신의 실제 관측값(예: 다른 이미지들의 진짜 width)이 있어서 더 타겟팅됨.
     let mut execution_count = 0;
 
     if handler.cond.is_magic_byte {
-        execution_count = apply_magic_byte_pool(handler, &pattern, iterations);
+        let is_loop_counter = LOOP_COUNTER_MAP.lock().unwrap().contains_key(&handler.cond.base.cmpid);
+        execution_count = if is_loop_counter {
+            apply_loop_counter_pool(handler, iterations)
+        } else {
+            apply_magic_byte_pool(handler, &pattern, iterations)
+        };
     } else {
         let map = LABEL_PATTERN_MAP.lock().unwrap();
-        let total_records = if let Some(records) = map.get(&pattern) {
-            records.len()
-        } else {
-            0
-        };
+        let total_records = map.get(&pattern).map(|pool| pool.records.len()).unwrap_or(0);
         drop(map);
 
         if handler.cond.reusing_record_index >= total_records {
@@ -135,11 +140,28 @@ pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) ->
 // 완전히 동일하게 값을 그대로 buf에 삽입만 함. 차이는 MAGIC_BYTE_MAP에서 후보를
 // 가져온다는 것뿐 -- diff 보정 등은 여기서 하지 않음 (FnFuzz가 별도로 담당).
 fn apply_magic_byte_pool(handler: &mut SearchHandler, pattern: &LabelPattern, iterations: usize) -> usize {
+    // Slice forward from cond.reusing_record_index (same field/pattern as
+    // LABEL_PATTERN_MAP's get_next_records) instead of collecting the whole
+    // pool bucket and re-trying the same HashMap-iteration-order prefix on
+    // every call -- pool.order is insertion-ordered and stable, so this
+    // actually advances through the full candidate set across repeated
+    // mutation attempts on the same cond, and only clones the slice it needs.
     let candidates: Vec<Vec<u8>> = {
         let map = MAGIC_BYTE_MAP.lock().unwrap();
-        map.get(pattern)
-            .map(|pool| pool.values.keys().cloned().collect())
-            .unwrap_or_default()
+        match map.get(pattern) {
+            Some(pool) => {
+                let total = pool.order.len();
+                let start = handler.cond.reusing_record_index;
+                if start >= total {
+                    Vec::new()
+                } else {
+                    let end = (start + iterations).min(total);
+                    handler.cond.reusing_record_index = end;
+                    pool.order[start..end].to_vec()
+                }
+            },
+            None => Vec::new(),
+        }
     };
     if candidates.is_empty() {
         return 0;
@@ -168,7 +190,7 @@ fn apply_magic_byte_pool(handler: &mut SearchHandler, pattern: &LabelPattern, it
     }
 
     let mut execution_count = 0;
-    for magic in candidates.iter().take(iterations) {
+    for magic in candidates.iter() {
         if handler.is_stopped_or_skip() {
             break;
         }
@@ -176,6 +198,67 @@ fn apply_magic_byte_pool(handler: &mut SearchHandler, pattern: &LabelPattern, it
         let len = magic.len().min(end - begin);
         handler.buf[begin..begin + len].copy_from_slice(&magic[..len]);
         handler.executor.current_reusing_detail = vec![(seg.begin, seg.begin + len as u32, magic[..len].to_vec())];
+
+        let buf = handler.buf.clone();
+        handler.execute(&buf);
+        execution_count += 1;
+    }
+    execution_count
+}
+
+// loop-counter로 확정된 magic byte 조건문 전용. MAGIC_BYTE_MAP처럼 길이(pattern)로
+// 조회하지 않고 cmpid로 직접 조회함 -- 이 cond 자신이 관측한 값들만 담겨있어서
+// (다른 cmpid 값과 안 섞임) apply_magic_byte_pool보다 더 타겟팅된 candidate pool임.
+// 나머지 로직(인덱스 슬라이싱, offset에 그대로 삽입)은 apply_magic_byte_pool과 동일.
+fn apply_loop_counter_pool(handler: &mut SearchHandler, iterations: usize) -> usize {
+    let cmpid = handler.cond.base.cmpid;
+    let candidates: Vec<Vec<u8>> = {
+        let map = LOOP_COUNTER_MAP.lock().unwrap();
+        match map.get(&cmpid) {
+            Some(pool) => {
+                let total = pool.order.len();
+                let start = handler.cond.reusing_record_index;
+                if start >= total {
+                    Vec::new()
+                } else {
+                    let end = (start + iterations).min(total);
+                    handler.cond.reusing_record_index = end;
+                    pool.order[start..end].to_vec()
+                }
+            },
+            None => Vec::new(),
+        }
+    };
+    if candidates.is_empty() {
+        return 0;
+    }
+
+    let merged_offsets = if !handler.cond.magic_byte_group.is_empty() {
+        handler.cond.magic_byte_group.clone()
+    } else {
+        merge_continuous_segments(&handler.cond.offsets)
+    };
+    if merged_offsets.len() != 1 {
+        return 0;
+    }
+    let seg = merged_offsets[0];
+    let begin = seg.begin as usize;
+    let end = seg.end as usize;
+
+    let max_end = end.max(handler.buf.len());
+    if max_end > handler.buf.len() {
+        handler.buf.resize(max_end, 0);
+    }
+
+    let mut execution_count = 0;
+    for value in candidates.iter() {
+        if handler.is_stopped_or_skip() {
+            break;
+        }
+
+        let len = value.len().min(end - begin);
+        handler.buf[begin..begin + len].copy_from_slice(&value[..len]);
+        handler.executor.current_reusing_detail = vec![(seg.begin, seg.begin + len as u32, value[..len].to_vec())];
 
         let buf = handler.buf.clone();
         handler.execute(&buf);
@@ -192,8 +275,8 @@ fn try_combined_segments(handler: &mut SearchHandler, pattern: &Vec<u32>, iterat
         pattern.iter().map(|&segment_size| {
             let single_pattern = vec![segment_size];
             map.get(&single_pattern)
-                .map(|records| {
-                    records.iter()
+                .map(|pool| {
+                    pool.records.iter()
                         .filter_map(|r| r.critical_values.first().cloned())
                         .collect()
                 })
