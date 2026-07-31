@@ -31,75 +31,330 @@ lazy_static! {
       Mutex::new(HashMap::new());
 
     // magic-byte comparisons (cond.is_magic_byte) are pooled separately from
-    // LABEL_PATTERN_MAP: pattern (tainted-side byte length) ->
-    // (magic constant, taint value at first coverage) pairs.
-    pub static ref MAGIC_BYTE_MAP: Mutex<HashMap<LabelPattern, HashSet<(Vec<u8>, Vec<u8>)>>> =
+    // LABEL_PATTERN_MAP: pattern (tainted-side byte length) -> a pool of
+    // distinct magic (constant-side) values and distinct taint (tainted-side,
+    // at first coverage) values, each deduplicated independently.
+    pub static ref MAGIC_BYTE_MAP: Mutex<HashMap<LabelPattern, MagicBytePool>> =
+      Mutex::new(HashMap::new());
+
+    // Quarantine for magic-byte cmpids that turned out to be loop counters /
+    // accumulated positions, not real constants (untainted != compile-time
+    // constant is an is_magic_byte_cmp() blind spot -- see
+    // flag_loop_counters_in_batch). Kept for inspection rather than
+    // discarded, same spirit as MAGIC_BYTE_MAP itself.
+    //
+    // Keyed by cmpid (not LabelPattern like MAGIC_BYTE_MAP) -- this map IS
+    // the "known loop-counter cmpid" cache: insert_magic_byte_value checks
+    // membership via contains_key(&cmpid) directly, so there's no separate
+    // HashSet<u32> to keep in sync with it. Grouping loop-counter junk by
+    // cmpid is also more useful for inspection than by byte-length, since
+    // length mixes together unrelated cmpids that just happen to match.
+    pub static ref LOOP_COUNTER_MAP: Mutex<HashMap<u32, MagicBytePool>> =
       Mutex::new(HashMap::new());
 }
 
-// The magic (constant) side of cond.variables. For FN_OP, cond.variables is
-// [magic_bytes, tainted_bytes] concatenated (see fparser.rs / cmpfn.rs's
-// FnFuzz, which splits it the same way for its diff-adjustment insertion);
-// the magic prefix's length == cond.base.size (track.rs sets size to the
-// OTHER/untainted operand's length). For plain int compares, cond.variables
-// already IS just the magic bytes.
-fn magic_value(cond: &CondStmt) -> &[u8] {
-    if cond.base.op == defs::COND_FN_OP {
-        let magic_len = (cond.base.size as usize).min(cond.variables.len());
-        &cond.variables[..magic_len]
-    } else {
-        &cond.variables
-    }
+// A cmpid's observed distinct integer values are treated as a loop counter
+// (or similar accumulated-position variable) if there are enough samples and
+// they're packed too densely to be a set of independent, unrelated
+// constants. density = span / count, where span = max-min+1 -- a loop
+// counter's values cluster near 1 (mostly consecutive integers, since
+// that's literally what a counter produces, modulo sampling gaps from
+// MAX_COND_ORDER capping how many iterations get recorded per input);
+// genuine constants/table values are scattered far more sparsely. Validated
+// empirically across jq/tiffsplit/infotocap/imginfo/exiv2: every confirmed
+// loop-counter cmpid had density <= 1.30, every confirmed genuine
+// constant/table cmpid had density >= 2.12 (94 samples, no overlap).
+const LOOP_COUNTER_MIN_SAMPLES: usize = 4;
+const LOOP_COUNTER_MAX_DENSITY: f64 = 1.5;
+
+// logging only -- not part of dedup identity (see MagicBytePool.values).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ValueOrigin {
+    Magic,
+    Tainted,
 }
 
-// Confirm the tainted operand's runtime value is a direct, untransformed copy
-// of the input bytes at cond.offsets before trusting the (magic, tainted)
-// pair as reusable (mirrors AFL++ cmplog's buf==pattern check before it
-// commits to a direct patch).
+#[derive(Debug, Default, Clone)]
+pub struct MagicBytePool {
+    // both the magic (constant) side and the tainted side go into one pool,
+    // keyed only by pattern (they're the same byte-length now, see
+    // magic_value_if_untransformed). Deduplicated purely on the byte value
+    // (the HashMap key); (origin, cmpid) is logging/traceability metadata only
+    // (source cmpid -> file/line via cmpid_track.txt) -- first observation
+    // wins, not an exhaustive history.
+    pub values: HashMap<Vec<u8>, (ValueOrigin, u32)>,
+}
+
+// Verify the comparison is untransformed AND derive the magic (constant) value
+// at the SAME byte-length as `actual_bytes` (the tainted side's real length,
+// per cond.offsets/pattern) -- not cond.base.size, the compiled comparison's
+// bit-width. Those two lengths differ whenever a narrow value (e.g. a single
+// tainted byte) gets implicitly widened before the compare (`char c; c ==
+// '\n'` compiles to an i32 compare in C) -- extremely common, and previously
+// caused magic/tainted to be stored at mismatched lengths, and caused
+// verification to silently no-op (see git history for the old size-based
+// version) whenever actual_bytes was shorter than cond.base.size.
+//
+// Returns None if the comparison isn't a direct, untransformed copy of
+// actual_bytes under EITHER byte order (mirrors AFL++ cmplog's buf==pattern
+// check before it commits to a direct patch), or if a same-length magic
+// value can't be produced.
 //
 // NOTE: for FN_OP this only verifies the VALUE; it does not fix the separate,
 // still-open issue that track.rs's fn-compare hook collapses genuine dual-taint
 // calls (memcmp(tainted_a, tainted_b, n)) into an apparent single label before
 // this cond is even classified as magic-byte.
-fn is_untransformed(cond: &CondStmt, actual_bytes: &[u8]) -> bool {
-    if cond.base.op == defs::COND_FN_OP {
-        let magic_len = magic_value(cond).len();
-        return match cond.variables.get(magic_len..) {
-            Some(tainted_captured) => tainted_captured == actual_bytes,
-            None => true, // variables too short to split, can't verify -> don't block storage
-        };
+fn magic_value_if_untransformed(cond: &CondStmt, actual_bytes: &[u8]) -> Option<Vec<u8>> {
+    let len = actual_bytes.len();
+    if len == 0 {
+        return None;
     }
 
-    let tainted_arg = if cond.base.lb1 > 0 {
-        cond.base.arg1
+    if cond.base.op == defs::COND_FN_OP {
+        // cond.variables is [magic_bytes, tainted_bytes]; the magic prefix's
+        // natural length is cond.base.size (track.rs sets size to the
+        // OTHER/untainted operand's length).
+        let natural_magic_len = (cond.base.size as usize).min(cond.variables.len());
+        let tainted_captured = cond.variables.get(natural_magic_len..)?;
+        if tainted_captured != actual_bytes || len > natural_magic_len {
+            return None;
+        }
+        Some(cond.variables[..len].to_vec())
     } else {
-        cond.base.arg2
-    };
+        let (magic_arg, tainted_arg) = if cond.base.lb1 > 0 {
+            (cond.base.arg2, cond.base.arg1)
+        } else {
+            (cond.base.arg1, cond.base.arg2)
+        };
 
-    match mut_input::read_as_ule(actual_bytes, cond.base.size as usize) {
-        Some(actual_val) => actual_val == tainted_arg,
-        None => true, // unsupported width, can't verify -> don't block storage
+        // actual_bytes is raw, verbatim input bytes (via cond.offsets), so it's
+        // always in true buffer order. tainted_arg is the operand's runtime
+        // integer value -- but source code can assemble a multi-byte value
+        // either via a native typed load (little-endian on x86) or manual
+        // bit-shifts (`(buf[0]<<8)|buf[1]`, big-endian; e.g. jasper's PGX/RAS
+        // magic checks). Nothing in the track data says which, so interpret
+        // actual_bytes both ways and accept whichever matches -- then encode
+        // magic_arg with that SAME byte order, so the derived magic value is
+        // actually insertable (matches git history: assuming little-endian
+        // unconditionally silently mismatched real file byte order here).
+        if mut_input::read_as_ule(actual_bytes) == Some(tainted_arg) {
+            let magic = mut_input::write_as_ule(magic_arg, len);
+            if magic.len() != len {
+                return None; // unsupported width (only 1/2/4/8)
+            }
+            Some(magic)
+        } else if mut_input::read_as_ube(actual_bytes) == Some(tainted_arg) {
+            let magic = mut_input::write_as_ube(magic_arg, len);
+            if magic.len() != len {
+                return None;
+            }
+            Some(magic)
+        } else {
+            None
+        }
     }
 }
 
-fn add_magic_byte_record(cond: &CondStmt, buf: &Vec<u8>) {
-    if cond.offsets.is_empty() || cond.variables.is_empty() {
+fn insert_magic_byte_value(pattern: LabelPattern, magic: Vec<u8>, tainted: Vec<u8>, cmpid: u32) {
+    // known loop-counter cmpids skip MAGIC_BYTE_MAP entirely -- flagged by
+    // flag_loop_counters_in_batch before this ever runs. LOOP_COUNTER_MAP's
+    // own keys ARE the "known loop-counter cmpid" set, so this is a plain
+    // O(1) membership check, no separate cache to keep in sync.
+    let mut loop_map = LOOP_COUNTER_MAP.lock().unwrap();
+    if let Some(pool) = loop_map.get_mut(&cmpid) {
+        // the "magic" side here is really just the counter's own value at
+        // whatever iteration this observation came from, not a real constant
+        // -- not useful to keep. the tainted side is a real input byte
+        // (e.g. hdr->width), still meaningful, so that one's kept.
+        pool.values.entry(tainted).or_insert((ValueOrigin::Tainted, cmpid));
+        return;
+    }
+    drop(loop_map);
+
+    let mut map = MAGIC_BYTE_MAP.lock().unwrap();
+    let pool = map.entry(pattern).or_insert_with(MagicBytePool::default);
+    pool.values.entry(magic).or_insert((ValueOrigin::Magic, cmpid));
+    pool.values.entry(tainted).or_insert((ValueOrigin::Tainted, cmpid));
+}
+
+fn density_flags_loop_counter(values: &HashSet<u64>) -> bool {
+    if values.len() < LOOP_COUNTER_MIN_SAMPLES {
+        return false;
+    }
+    let min = *values.iter().min().unwrap();
+    let max = *values.iter().max().unwrap();
+    let span = (max - min + 1) as f64;
+    let density = span / values.len() as f64;
+    density <= LOOP_COUNTER_MAX_DENSITY
+}
+
+// Flags loop-counter cmpids using only THIS ONE batch (one input's whole
+// cond_stmts, i.e. one execution) -- no periodic full-pool re-scan needed.
+// This works because a genuine loop re-executes the same cmpid multiple
+// times WITHIN a single execution (see runtime/src/logger.rs::get_order,
+// which pushes a new cond_list entry per repeat, capped at
+// MAX_COND_ORDER=16) -- so a loop that iterates enough times already gives
+// density_flags_loop_counter enough same-execution samples to decide. Loops
+// that iterate too few times in EVERY single execution (or single-shot
+// accumulated-position checks like `start == size`) never accumulate enough
+// same-batch samples and won't get caught here -- accepted gap, not worth
+// cross-execution bookkeeping to close for those.
+//
+// Must run BEFORE the main per-cond loop below: it only touches
+// LOOP_COUNTER_MAP (creating empty entries for newly-flagged cmpids), so
+// insert_magic_byte_value's contains_key(&cmpid) check sees them in time to
+// route this same batch's values correctly.
+fn flag_loop_counters_in_batch(conds: &Vec<CondStmt>) {
+    let mut by_cmpid: HashMap<u32, HashSet<u64>> = HashMap::new();
+    for cond in conds.iter() {
+        // FN_OP has no simple integer arg (see magic_value_if_untransformed) --
+        // the loop-counter blind spot only exists for the ICMP EQ/NE branch.
+        if !cond.is_magic_byte || cond.base.op == defs::COND_FN_OP {
+            continue;
+        }
+        let tainted_arg = if cond.base.lb1 > 0 { cond.base.arg1 } else { cond.base.arg2 };
+        by_cmpid.entry(cond.base.cmpid).or_insert_with(HashSet::new).insert(tainted_arg);
+    }
+
+    let newly_flagged: Vec<u32> = by_cmpid
+        .into_iter()
+        .filter(|(_, vals)| density_flags_loop_counter(vals))
+        .map(|(cmpid, _)| cmpid)
+        .collect();
+
+    if newly_flagged.is_empty() {
         return;
     }
 
+    let mut loop_map = LOOP_COUNTER_MAP.lock().unwrap();
+    for cmpid in newly_flagged {
+        if loop_map.contains_key(&cmpid) {
+            continue; // already flagged by an earlier batch, nothing to sweep
+        }
+        loop_map.insert(cmpid, MagicBytePool::default());
+
+        // This cmpid just crossed the sample threshold for the first time.
+        // Earlier batches may have each individually had too few samples of
+        // it to trip this check, and so quietly went into MAGIC_BYTE_MAP --
+        // sweep those out now too, same tainted-only policy as everywhere
+        // else. One-time, per-cmpid, only on the rare batch that newly
+        // flags something -- not a periodic full-pool scan.
+        let mut main_map = MAGIC_BYTE_MAP.lock().unwrap();
+        for pool in main_map.values_mut() {
+            let mut keep = HashMap::new();
+            for (v, meta) in pool.values.drain() {
+                if meta.1 != cmpid {
+                    keep.insert(v, meta);
+                } else if meta.0 == ValueOrigin::Tainted {
+                    loop_map.get_mut(&cmpid).unwrap().values.entry(v).or_insert(meta);
+                }
+            }
+            pool.values = keep;
+        }
+        main_map.retain(|_, pool| !pool.values.is_empty());
+    }
+}
+
+// Per-cond magic/tainted extraction, shared by the direct (>1 byte pattern)
+// path and the 1-byte adjacency-merge path below.
+fn extract_magic_and_tainted(cond: &CondStmt, buf: &Vec<u8>) -> Option<(Vec<u8>, Vec<u8>)> {
+    if cond.offsets.is_empty() || cond.variables.is_empty() {
+        return None;
+    }
     let actual_bytes: Vec<u8> = extract_value_from_label(&cond.offsets, buf)
         .into_iter()
         .flatten()
         .collect();
+    let magic = magic_value_if_untransformed(cond, &actual_bytes)?;
+    Some((magic, actual_bytes))
+}
 
-    if !is_untransformed(cond, &actual_bytes) {
-        return;
+// Handle every magic-byte cond from ONE input's whole cond_stmts batch.
+//
+// A single tainted byte often isn't compared all at once (memcmp of a whole
+// magic string) but one byte at a time (`buf[0]=='P' && buf[1]=='N' && ...`),
+// each compiling to its OWN 1-byte-pattern cond. Storing those in isolation is
+// useless (a single byte's "magic pool" is mostly noise), so they get merged
+// into one combined multi-byte record instead.
+//
+// The grouping itself (which 1-byte conds are adjacent: same
+// cond.base.context, contiguous offsets) is decided once, right after taint
+// tracking, in fparser.rs::group_adjacent_one_byte_magic_bytes -- every member
+// cond carries the result in cond.magic_byte_group. That's required so the
+// SAME grouping is still visible later, at reusing-mutation time, when a
+// single member cond is pulled out of the depot queue on its own and its
+// siblings from this batch are no longer around. Here we just use that
+// pre-computed grouping to build the combined record; a 1-byte cond with no
+// tagged group (no adjacent same-context sibling in this input) is dropped,
+// matching prior behavior.
+pub fn add_magic_byte_records(conds: &Vec<CondStmt>, buf: &Vec<u8>) {
+    flag_loop_counters_in_batch(conds);
+
+    let mut groups: HashMap<(u32, u32, u32), Vec<&CondStmt>> = HashMap::new();
+
+    for cond in conds.iter() {
+        if !cond.is_magic_byte {
+            continue;
+        }
+
+        if !cond.magic_byte_group.is_empty() {
+            let span = cond.magic_byte_group[0];
+            groups
+                .entry((cond.base.context, span.begin, span.end))
+                .or_insert_with(Vec::new)
+                .push(cond);
+            continue;
+        }
+
+        let pattern = extract_pattern_merged(&cond.offsets);
+        if pattern.len() == 1 && pattern[0] == 1 {
+            // isolated one-byte magic-byte cond, no adjacent sibling in this
+            // input -- not useful on its own.
+            continue;
+        }
+
+        if let Some((magic, tainted)) = extract_magic_and_tainted(cond, buf) {
+            insert_magic_byte_value(pattern, magic, tainted, cond.base.cmpid);
+        }
     }
 
-    let pattern = extract_pattern_merged(&cond.offsets);
-    let magic = magic_value(cond).to_vec();
-    let mut map = MAGIC_BYTE_MAP.lock().unwrap();
-    map.entry(pattern).or_insert_with(HashSet::new).insert((magic, actual_bytes));
+    for members in groups.values_mut() {
+        members.sort_by_key(|c| c.offsets[0].begin);
+
+        // A run's members must all pass extract_magic_and_tainted's LE/BE
+        // untransformed check to be combined -- but one failing member (a
+        // genuinely transformed comparison) shouldn't sink the whole run.
+        // Flush whatever passed so far as its own record (if long enough to
+        // be worth it) and start a fresh run right after the failure, so the
+        // group splits around it instead of being discarded wholesale.
+        let mut run_magic: Vec<u8> = Vec::new();
+        let mut run_tainted: Vec<u8> = Vec::new();
+        let mut run_cmpid: u32 = 0;
+
+        for cond in members.iter() {
+            match extract_magic_and_tainted(cond, buf) {
+                Some((m, t)) => {
+                    if run_magic.is_empty() {
+                        run_cmpid = cond.base.cmpid;
+                    }
+                    run_magic.extend_from_slice(&m);
+                    run_tainted.extend_from_slice(&t);
+                },
+                None => {
+                    if run_magic.len() >= 2 {
+                        let pattern = vec![run_magic.len() as u32];
+                        insert_magic_byte_value(pattern, run_magic.clone(), run_tainted.clone(), run_cmpid);
+                    }
+                    run_magic.clear();
+                    run_tainted.clear();
+                },
+            }
+        }
+        if run_magic.len() >= 2 {
+            let pattern = vec![run_magic.len() as u32];
+            insert_magic_byte_value(pattern, run_magic, run_tainted, run_cmpid);
+        }
+    }
 }
 
 pub fn extract_pattern(offsets: &Vec<TagSeg>) -> LabelPattern {
@@ -251,19 +506,17 @@ fn add_dual_label_records(cond: &CondStmt, buf: &Vec<u8>) {
 }
 
 pub fn add_cond_to_pattern_map(cond: &CondStmt, buf: &Vec<u8>) {
+  // magic-byte conds are handled batch-wide by add_magic_byte_records()
+  // (needs sibling conds from the same input for offset-adjacency merging).
   if cond.is_magic_byte {
-      add_magic_byte_record(cond, buf);
       return;
   }
 
-  if cond.base.lb1 > 0 && cond.base.lb2 == 0 {
-      add_single_label_record(cond, buf);
-  }
-  else if cond.base.lb1 == 0 && cond.base.lb2 > 0 {
-      add_single_label_record(cond, buf);
-  }
-  else if cond.base.lb1 > 0 && cond.base.lb2 > 0 {
+  if cond.base.lb1 > 0 && cond.base.lb2 > 0 {
       add_dual_label_records(cond, buf);
+  }
+  else if cond.base.lb1 > 0 || cond.base.lb2 > 0 {
+      add_single_label_record(cond, buf);
   }
 }
 
@@ -329,24 +582,51 @@ pub fn save_magic_bytes_to_text(path: &Path) -> io::Result<()> {
   writeln!(file, "# Angora Magic Byte Map")?;
   writeln!(file, "# Generated at: {}", chrono::Local::now())?;
   writeln!(file, "# Total patterns: {}", map.len())?;
-  writeln!(file, "# Total records: {}", map.values().map(|v| v.len()).sum::<usize>())?;
+  writeln!(file, "# Total values: {}", map.values().map(|p| p.values.len()).sum::<usize>())?;
   writeln!(file)?;
 
   let mut sorted_patterns: Vec<_> = map.iter().collect();
   sorted_patterns.sort_by_key(|(pattern, _)| pattern.clone());
 
-  for (pattern, records) in sorted_patterns {
+  for (pattern, pool) in sorted_patterns {
       writeln!(file, "Pattern: {:?} (size: {})", pattern, pattern.iter().sum::<u32>())?;
-      writeln!(file, "  Records: {}", records.len())?;
-
-      for (magic, tainted_baseline) in records.iter() {
-        writeln!(file, "        Magic: {:?}", magic)?;
-        writeln!(file, "        Taint baseline: {:?}", tainted_baseline)?;
+      writeln!(file, "  Values ({}):", pool.values.len())?;
+      for (value, (origin, cmpid)) in pool.values.iter() {
+        writeln!(file, "        [{:?}] cmpid={} {:?}", origin, cmpid, value)?;
       }
       writeln!(file)?;
   }
 
   info!("[MagicByte] Saved to {:?}", path);
+  Ok(())
+}
+
+pub fn save_loop_counter_map_to_text(path: &Path) -> io::Result<()> {
+  let map = LOOP_COUNTER_MAP.lock().unwrap();
+  let mut file = File::create(path)?;
+
+  writeln!(file, "# Angora Loop Counter Quarantine")?;
+  writeln!(file, "# cmpids whose magic-byte values turned out to be loop counters / accumulated")?;
+  writeln!(file, "# positions, not real constants (see density_flags_loop_counter) -- kept here")?;
+  writeln!(file, "# for inspection, excluded from MAGIC_BYTE_MAP / reusing mutation.")?;
+  writeln!(file, "# Generated at: {}", chrono::Local::now())?;
+  writeln!(file, "# Total cmpids: {}", map.len())?;
+  writeln!(file, "# Total values: {}", map.values().map(|p| p.values.len()).sum::<usize>())?;
+  writeln!(file)?;
+
+  let mut sorted_cmpids: Vec<_> = map.iter().collect();
+  sorted_cmpids.sort_by_key(|(cmpid, _)| **cmpid);
+
+  for (cmpid, pool) in sorted_cmpids {
+      writeln!(file, "Cmpid: {}", cmpid)?;
+      writeln!(file, "  Values ({}):", pool.values.len())?;
+      for (value, (origin, _)) in pool.values.iter() {
+        writeln!(file, "        [{:?}] {:?}", origin, value)?;
+      }
+      writeln!(file)?;
+  }
+
+  info!("[LoopCounter] Saved to {:?}", path);
   Ok(())
 }
 

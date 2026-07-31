@@ -112,6 +112,10 @@ impl Depot {
     }
 
     pub fn add_entries(&self, conds: Vec<CondStmt>, buf: &Vec<u8>) {
+        if self.enable_reusing {
+            label_pattern_tracker::add_magic_byte_records(&conds, buf);
+        }
+
         let mut q = match self.queue.lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
@@ -168,6 +172,10 @@ impl Depot {
     }
 
     pub fn add_entries_with_filter(&self, conds: Vec<CondStmt>, mutated_offsets: &HashSet<u32>, buf: &Vec<u8>) {
+        if self.enable_reusing {
+            label_pattern_tracker::add_magic_byte_records(&conds, buf);
+        }
+
         let mut q = match self.queue.lock() {
             Ok(guard) => guard,
             Err(poisoned) => {

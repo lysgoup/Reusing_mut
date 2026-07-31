@@ -22,6 +22,12 @@ pub struct CondStmt {
     pub reusing_record_index: usize,
 
     pub is_magic_byte: bool,
+    // non-empty only for one-byte magic-byte conds that were found adjacent
+    // (same context, contiguous offsets) to sibling one-byte conds right after
+    // taint tracking. holds the whole group's merged offset span, so this cond
+    // can still be looked up/mutated as part of the wider group after it's
+    // pulled out of the depot queue on its own.
+    pub magic_byte_group: Vec<TagSeg>,
 }
 
 impl PartialEq for CondStmt {
@@ -57,6 +63,7 @@ impl CondStmt {
             linear: false,
             reusing_record_index: 0,
             is_magic_byte: false,
+            magic_byte_group: vec![],
         }
     }
 

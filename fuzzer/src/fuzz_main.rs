@@ -192,6 +192,12 @@ pub fn fuzz_main(
         }
         info!("Magic byte map saved successfully!");
 
+        let loop_counter_text = angora_out_dir.join("loop_counter_map.txt");
+        if let Err(e) = depot::save_loop_counter_map_to_text(&loop_counter_text) {
+            warn!("Failed to save loop counter map (text): {:?}", e);
+        }
+        info!("Loop counter map saved successfully!");
+
         let cmpid_log_source = PathBuf::from("cmpid_log.txt");
         if cmpid_log_source.exists() {
             let cmpid_log_dest = angora_out_dir.join("cmpid_log.txt");

@@ -9,11 +9,14 @@ mod label_pattern_tracker;
 pub use self::{depot::Depot, file::*, sync::*};
 pub use self::label_pattern_tracker::{
   add_cond_to_pattern_map,
+  add_magic_byte_records,
   print_stats as print_pattern_stats,
   save_to_text,
   save_magic_bytes_to_text,
+  save_loop_counter_map_to_text,
   LABEL_PATTERN_MAP,
   MAGIC_BYTE_MAP,
+  LOOP_COUNTER_MAP,
   LabelPattern,
   extract_pattern_merged,
   CondRecord,

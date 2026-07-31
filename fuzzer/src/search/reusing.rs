@@ -15,8 +15,15 @@ pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) ->
     let snapshot = handler.executor.local_stats.snapshot();
     let buf_backup = handler.buf.clone();
 
-    // 2. pattern 추출
-    let pattern = extract_pattern_merged(&handler.cond.offsets);
+    // 2. pattern 추출 -- 인접 1바이트 magic byte 그룹에 속한 cond라면(
+    //    magic_byte_group, fparser.rs에서 taint tracking 직후에 계산됨),
+    //    자기 자신의 1바이트 offsets 대신 그룹 전체의 병합된 offsets를 써야
+    //    MAGIC_BYTE_MAP에 실제로 저장돼있는(병합된) 패턴과 일치함.
+    let pattern = if handler.cond.is_magic_byte && !handler.cond.magic_byte_group.is_empty() {
+        extract_pattern_merged(&handler.cond.magic_byte_group)
+    } else {
+        extract_pattern_merged(&handler.cond.offsets)
+    };
     if pattern.is_empty(){
         return false;
     }
@@ -131,16 +138,23 @@ fn apply_magic_byte_pool(handler: &mut SearchHandler, pattern: &LabelPattern, it
     let candidates: Vec<Vec<u8>> = {
         let map = MAGIC_BYTE_MAP.lock().unwrap();
         map.get(pattern)
-            .map(|set| set.iter().map(|(magic, _tainted_baseline)| magic.clone()).collect())
+            .map(|pool| pool.values.keys().cloned().collect())
             .unwrap_or_default()
     };
     if candidates.is_empty() {
         return 0;
     }
 
-    let merged_offsets = merge_continuous_segments(&handler.cond.offsets);
+    // 인접 그룹에 속해있으면 그룹 전체 span을 써야 pattern(N바이트)과
+    // 실제로 buf에 삽입되는 범위가 맞음 -- 자기 자신의 1바이트 span만 쓰면
+    // pool에서 꺼낸 N바이트 값을 1바이트만 덮어쓰게 됨.
+    let merged_offsets = if !handler.cond.magic_byte_group.is_empty() {
+        handler.cond.magic_byte_group.clone()
+    } else {
+        merge_continuous_segments(&handler.cond.offsets)
+    };
     // is_magic_byte_cmp()는 정확히 한쪽 라벨만 taint된 경우만 통과시키므로
-    // cond.offsets는 하나의 연속 영역으로 병합되는 게 정상.
+    // cond.offsets(혹은 magic_byte_group)는 하나의 연속 영역으로 병합되는 게 정상.
     if merged_offsets.len() != 1 {
         return 0;
     }
