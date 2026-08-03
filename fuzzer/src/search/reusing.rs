@@ -1,4 +1,4 @@
-use crate::depot::{LABEL_PATTERN_MAP, MAGIC_BYTE_MAP, LOOP_COUNTER_MAP, LabelPattern, extract_pattern_merged, CondRecord, get_next_records};
+use crate::depot::{LABEL_PATTERN_MAP, MAGIC_BYTE_MAP, LOOP_COUNTER_MAP, LabelPattern, extract_pattern_merged, extract_magic_and_tainted, CondRecord, get_next_records};
 use crate::search::SearchHandler;
 use rand::seq::SliceRandom;
 use angora_common::tag::TagSeg;
@@ -15,11 +15,23 @@ pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) ->
     let snapshot = handler.executor.local_stats.snapshot();
     let buf_backup = handler.buf.clone();
 
-    // 2. pattern 추출 -- 인접 1바이트 magic byte 그룹에 속한 cond라면(
+    // 2. is_magic_byte는 구조적 분류일 뿐(CondStmt::from) -- 이 cond가 실제로
+    //    변형 없이 입력 바이트를 그대로 비교하는지는 여기서 원본 buf로 다시
+    //    검증해야 함. 검증 실패(변형된 비교)면 애초에 add_magic_byte_records가
+    //    MAGIC_BYTE_MAP/LOOP_COUNTER_MAP에 이 cond의 값을 저장하지 않았고
+    //    (add_cond_to_pattern_map이 대신 LABEL_PATTERN_MAP에 저장해둠), 그래서
+    //    magic byte 경로로 보내봐야 후보가 없어 그냥 허탕침 -- 검증 통과한
+    //    것만 magic 경로로 보내고, 나머지는 일반 경로로 폴백함.
+    let is_untransformed_magic = handler.cond.is_magic_byte
+        && extract_magic_and_tainted(&handler.cond, &handler.buf).is_some();
+
+    // 3. pattern 추출 -- 인접 1바이트 magic byte 그룹에 속한 cond라면(
     //    magic_byte_group, fparser.rs에서 taint tracking 직후에 계산됨),
     //    자기 자신의 1바이트 offsets 대신 그룹 전체의 병합된 offsets를 써야
-    //    MAGIC_BYTE_MAP에 실제로 저장돼있는(병합된) 패턴과 일치함.
-    let pattern = if handler.cond.is_magic_byte && !handler.cond.magic_byte_group.is_empty() {
+    //    MAGIC_BYTE_MAP에 실제로 저장돼있는(병합된) 패턴과 일치함. 일반 경로로
+    //    폴백하는 경우엔 LABEL_PATTERN_MAP이 cond 자신의 offsets로 저장돼있으니
+    //    그룹 병합 패턴을 쓰면 안 됨.
+    let pattern = if is_untransformed_magic && !handler.cond.magic_byte_group.is_empty() {
         extract_pattern_merged(&handler.cond.magic_byte_group)
     } else {
         extract_pattern_merged(&handler.cond.offsets)
@@ -28,14 +40,14 @@ pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) ->
         return false;
     }
 
-    // 3. reusing 진행 -- magic byte 조건문은 MAGIC_BYTE_MAP만, 나머지는 LABEL_PATTERN_MAP만 사용.
+    // 4. reusing 진행 -- magic byte 조건문은 MAGIC_BYTE_MAP만, 나머지는 LABEL_PATTERN_MAP만 사용.
     //    단, cmpid 자체가 loop counter로 확정된 magic byte 조건문이라면 LOOP_COUNTER_MAP으로
     //    완전히 대체 -- MAGIC_BYTE_MAP[pattern]엔 이 cmpid의 값이 이미 다 빠져있어서(스윕됨)
     //    거기서 뭘 뽑아봐야 이 cond 자신과는 무관한 값들뿐이고, LOOP_COUNTER_MAP[cmpid]엔
     //    바로 이 cond 자신의 실제 관측값(예: 다른 이미지들의 진짜 width)이 있어서 더 타겟팅됨.
     let mut execution_count = 0;
 
-    if handler.cond.is_magic_byte {
+    if is_untransformed_magic {
         let is_loop_counter = LOOP_COUNTER_MAP.lock().unwrap().contains_key(&handler.cond.base.cmpid);
         execution_count = if is_loop_counter {
             apply_loop_counter_pool(handler, iterations)
@@ -91,7 +103,7 @@ pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) ->
         }
     }
 
-    // 4. reusing 종료 후, local_stats의 증가량을 REUSING_STATS로 복사
+    // 5. reusing 종료 후, local_stats의 증가량을 REUSING_STATS로 복사
     {
         let mut reusing_stats = REUSING_STATS.lock().unwrap();
 
@@ -117,7 +129,7 @@ pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) ->
         //       reusing_stats.num_exec.0, reusing_stats.num_inputs.0);
     }
 
-    // 5. local_stats를 백업으로 복원 (다음 mutation에서 reusing이 카운트 안 되도록)
+    // 6. local_stats를 백업으로 복원 (다음 mutation에서 reusing이 카운트 안 되도록)
     handler.executor.local_stats.restore(&snapshot);
     handler.buf = buf_backup;
 
@@ -128,7 +140,7 @@ pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) ->
     // handler.executor.local_stats.num_hangs.0,
     // handler.executor.local_stats.num_crashes.0);
 
-     // 6. 조건문이 해결되었는지 확인
+     // 7. 조건문이 해결되었는지 확인
      if handler.cond.is_done() {
         // info!("[Reusing] SUCCESS! Solved cmpid={}",handler.cond.base.cmpid);
         return true;

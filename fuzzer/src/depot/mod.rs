@@ -19,6 +19,7 @@ pub use self::label_pattern_tracker::{
   LOOP_COUNTER_MAP,
   LabelPattern,
   extract_pattern_merged,
+  extract_magic_and_tainted,
   CondRecord,
   get_next_records,
 };
