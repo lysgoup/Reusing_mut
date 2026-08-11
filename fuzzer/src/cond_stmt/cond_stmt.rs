@@ -20,6 +20,7 @@ pub struct CondStmt {
     pub linear: bool,
 
     pub reusing_record_index: usize,
+    pub reusing_general_record_index: usize,
 
     pub is_magic_byte: bool,
     // non-empty only for one-byte magic-byte conds that were found adjacent
@@ -62,6 +63,7 @@ impl CondStmt {
             num_minimal_optima: 0,
             linear: false,
             reusing_record_index: 0,
+            reusing_general_record_index: 0,
             is_magic_byte: false,
             magic_byte_group: vec![],
         }

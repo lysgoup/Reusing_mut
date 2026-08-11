@@ -54,6 +54,43 @@ pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) ->
         } else {
             apply_magic_byte_pool(handler, &pattern, iterations)
         };
+
+        // Magic/loop pool 소진 후 남은 budget으로 general pool fallback
+        let remaining = iterations - execution_count;
+        if remaining > 0 && !handler.is_stopped_or_skip() {
+            let general_pattern = extract_pattern_merged(&handler.cond.offsets);
+            if !general_pattern.is_empty() {
+                let total_records = {
+                    let map = LABEL_PATTERN_MAP.lock().unwrap();
+                    map.get(&general_pattern).map(|p| p.records.len()).unwrap_or(0)
+                };
+                if handler.cond.reusing_general_record_index < total_records {
+                    if let Some(selected_records) = get_next_records(
+                        &mut handler.cond.reusing_general_record_index,
+                        &general_pattern,
+                        remaining,
+                    ) {
+                        let merged_offsets = merge_continuous_segments(&handler.cond.offsets);
+                        for record in selected_records.iter() {
+                            if handler.is_stopped_or_skip() { break; }
+                            if insert_critical_value_with_merged(handler, record, &merged_offsets) {
+                                handler.executor.current_reusing_detail = merged_offsets.iter()
+                                    .zip(record.critical_values.iter())
+                                    .map(|(seg, val)| (seg.begin, seg.end, val.clone()))
+                                    .collect();
+                                let buf = handler.buf.clone();
+                                handler.execute(&buf);
+                                execution_count += 1;
+                            }
+                        }
+                    }
+                }
+                let remaining2 = iterations - execution_count;
+                if remaining2 > 0 && general_pattern.len() >= 2 {
+                    execution_count += try_combined_segments(handler, &general_pattern, remaining2);
+                }
+            }
+        }
     } else {
         let map = LABEL_PATTERN_MAP.lock().unwrap();
         let total_records = map.get(&pattern).map(|pool| pool.records.len()).unwrap_or(0);
@@ -64,7 +101,7 @@ pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) ->
                   pattern, handler.cond.reusing_record_index, total_records);
         } else {
             // ===== 1단계: 동일 패턴 시도 =====
-            if let Some(selected_records) = get_next_records(&mut handler.cond, &pattern, iterations) {
+            if let Some(selected_records) = get_next_records(&mut handler.cond.reusing_record_index, &pattern, iterations) {
                 // let actual_iterations = selected_records.len();
                 //    info!("[Reusing] Exact match: pattern={:?}, trying {} records (sequential)", pattern, actual_iterations);
 

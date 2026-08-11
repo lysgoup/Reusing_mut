@@ -691,7 +691,7 @@ pub fn save_loop_counter_map_to_text(path: &Path) -> io::Result<()> {
 }
 
 pub fn get_next_records(
-  cond: &mut CondStmt,
+  index: &mut usize,
   pattern: &LabelPattern,
   iterations: usize
 ) -> Option<Vec<CondRecord>> {
@@ -700,14 +700,14 @@ pub fn get_next_records(
     let records = &map.get(pattern)?.records;
 
     let total = records.len();
-    let start = cond.reusing_record_index;
+    let start = *index;
 
     if start >= total {
         return None;
     }
 
     let end = (start + iterations).min(total);
-    cond.reusing_record_index = end;
+    *index = end;
 
     records[start..end].to_vec()
   };
