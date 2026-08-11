@@ -186,12 +186,6 @@ pub fn fuzz_main(
         }
         info!("Pattern map saved successfully!");
 
-        let magic_bytes_text = angora_out_dir.join("magic_byte_map.txt");
-        if let Err(e) = depot::save_magic_bytes_to_text(&magic_bytes_text) {
-            warn!("Failed to save magic byte map (text): {:?}", e);
-        }
-        info!("Magic byte map saved successfully!");
-
         let loop_counter_text = angora_out_dir.join("loop_counter_map.txt");
         if let Err(e) = depot::save_loop_counter_map_to_text(&loop_counter_text) {
             warn!("Failed to save loop counter map (text): {:?}", e);
