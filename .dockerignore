@@ -10,5 +10,6 @@ Reusing-unibench_build/
 !Reusing-unibench_build/aflplusplus/
 !Reusing-unibench_build/aflplusplus-reusing-target/
 !Reusing-unibench_build/aflplusplus-reusing_fuzzer_only/
+!Reusing-unibench_build/aflplusplus-cmplog/
 _build_cache/
 target/
