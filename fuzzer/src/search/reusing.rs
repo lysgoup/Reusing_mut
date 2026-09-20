@@ -20,7 +20,7 @@ pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) ->
     //    1바이트 offsets 대신 그룹 전체의 병합된 offsets를 써야 LABEL_PATTERN_MAP에
     //    실제로 저장돼있는(병합된) 패턴/범위와 일치함. magic 값도 이제 일반 값과 같은
     //    LABEL_PATTERN_MAP에 저장되므로(add_magic_byte_records 참고) 모든 cond가 이
-    //    한 경로(apply_label_pattern_pool)만 씀 -- is_magic_byte 여부는 loop-counter
+    //    한 경로(apply_label_pattern_pool)만 씀 -- is_const_eq_shape 여부는 loop-counter
     //    cmpid인지 먼저 확인할지 판단할 때만 씀.
     let merged_offsets = if !handler.cond.magic_byte_group.is_empty() {
         handler.cond.magic_byte_group.clone()
@@ -40,7 +40,7 @@ pub fn apply_reusing_mutation(handler: &mut SearchHandler, iterations: usize) ->
     //    서로 진행 상황을 밀어내서 둘 다 처음부터 다시 시도하게 됨.
     let mut execution_count = 0;
 
-    if handler.cond.is_magic_byte
+    if handler.cond.is_const_eq_shape
         && LOOP_COUNTER_MAP.lock().unwrap().contains_key(&handler.cond.base.cmpid)
     {
         execution_count = apply_loop_counter_pool(handler, iterations);

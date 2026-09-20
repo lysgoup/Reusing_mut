@@ -7,5 +7,8 @@ Reusing-unibench_build/
 !Reusing-unibench_build/angora/
 !Reusing-unibench_build/coverage/
 !Reusing-unibench_build/ffmpeg/
+!Reusing-unibench_build/aflplusplus/
+!Reusing-unibench_build/aflplusplus-reusing-target/
+!Reusing-unibench_build/aflplusplus-reusing_fuzzer_only/
 _build_cache/
 target/

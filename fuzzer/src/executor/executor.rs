@@ -453,7 +453,7 @@ impl Executor {
         used_us / 3
     }
 
-    fn track(&mut self, id: usize, buf: &Vec<u8>, speed: u32) -> Vec<cond_stmt::CondStmt> {
+    pub fn track(&mut self, id: usize, buf: &Vec<u8>, speed: u32) -> Vec<cond_stmt::CondStmt> {
         self.envs.insert(
             defs::TRACK_OUTPUT_VAR.to_string(),
             self.cmd.track_path.clone(),

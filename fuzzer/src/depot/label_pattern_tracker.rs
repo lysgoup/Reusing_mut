@@ -39,7 +39,8 @@ pub struct LabelPatternPool {
 }
 
 lazy_static! {
-    // Magic-byte comparisons (cond.is_magic_byte) feed their derived magic
+    // Magic-byte comparisons (cond.is_const_eq_shape candidates that pass the
+    // untransformed check) feed their derived magic
     // (constant-side) value into this SAME map as an ordinary CondRecord --
     // there's no separate magic-byte pool anymore. Only the derivation
     // (add_magic_byte_records, which verifies untransformed-ness and handles
@@ -50,7 +51,7 @@ lazy_static! {
 
     // Quarantine for magic-byte cmpids that turned out to be loop counters /
     // accumulated positions, not real constants (untainted != compile-time
-    // constant is an is_magic_byte_cmp() blind spot -- see
+    // constant is an is_const_eq_shape() blind spot -- see
     // flag_loop_counters_in_batch). Kept for inspection rather than
     // discarded, same spirit as keeping noisy-but-real values elsewhere.
     //
@@ -136,6 +137,24 @@ fn magic_value_if_untransformed(cond: &CondStmt, actual_bytes: &[u8]) -> Option<
         }
         Some(cond.variables[..len].to_vec())
     } else {
+        // An integer compare reads ONE contiguous span. If this cond's taint
+        // lands in two or more disjoint spans, actual_bytes below is those
+        // spans concatenated with the gaps dropped, so it cannot be the value
+        // the compare actually saw -- read_as_u{le,be} would have to accept
+        // that spliced byte string AND have it equal tainted_arg. Measured
+        // over whole corpora (jq/nm/imginfo/mujs), that never happened once in
+        // 183874 multi-span icmp conds, while single-span conds verified
+        // normally. Bail out here instead of splicing and re-reading: the cond
+        // still reaches the pool through add_cond_to_pattern_map's ordinary
+        // path, which stores its observed bytes per span.
+        //
+        // Deliberately NOT applied to the COND_FN_OP branch above: that one
+        // compares byte strings, not integers, so it has no width rule to fail
+        // on, and .dtaint carries no magic_bytes section to measure it offline.
+        if extract_pattern_merged(&cond.offsets).len() > 1 {
+            return None;
+        }
+
         let (magic_arg, tainted_arg) = if cond.base.lb1 > 0 {
             (cond.base.arg2, cond.base.arg1)
         } else {
@@ -242,11 +261,11 @@ fn flag_loop_counters_in_batch(conds: &Vec<CondStmt>) {
     for cond in conds.iter() {
         // FN_OP has no simple integer arg (see magic_value_if_untransformed) --
         // the loop-counter blind spot only exists for the ICMP EQ/NE branch.
-        if !cond.is_magic_byte || cond.base.op == defs::COND_FN_OP {
+        if !cond.is_const_eq_shape || cond.base.op == defs::COND_FN_OP {
             continue;
         }
         // check the MAGIC (untainted) side's density -- that's the operand
-        // is_magic_byte_cmp() is trusting to be a constant. The tainted side
+        // is_const_eq_shape() is trusting to be a constant. The tainted side
         // is real input data and is EXPECTED to vary widely (e.g. every
         // distinct character a classifier loop happens to see) -- checking
         // that side instead would misfire on legitimate character/byte
@@ -295,7 +314,7 @@ fn flag_loop_counters_in_batch(conds: &Vec<CondStmt>) {
 // Per-cond magic/tainted extraction, shared by the direct (>1 byte pattern)
 // path and the 1-byte adjacency-merge path below. Also `pub` so
 // add_cond_to_pattern_map (below) can re-run the SAME untransformed check
-// this cond was originally classified with -- an is_magic_byte cond whose
+// this cond was originally classified with -- an is_const_eq_shape candidate whose
 // comparison turns out to be transformed never makes it into
 // LABEL_PATTERN_MAP via add_magic_byte_records/LOOP_COUNTER_MAP, so a None
 // here means "store it through add_cond_to_pattern_map's ordinary path
@@ -322,7 +341,7 @@ pub fn extract_magic_and_tainted(cond: &CondStmt, buf: &Vec<u8>) -> Option<(Vec<
 //
 // The grouping itself (which 1-byte conds are adjacent: same
 // cond.base.context, contiguous offsets) is decided once, right after taint
-// tracking, in fparser.rs::group_adjacent_one_byte_magic_bytes -- every member
+// tracking, in fparser.rs::tag_adjacent_one_byte_groups -- every member
 // cond carries the result in cond.magic_byte_group. That's required so the
 // SAME grouping is still visible later, at reusing-mutation time, when a
 // single member cond is pulled out of the depot queue on its own and its
@@ -336,7 +355,7 @@ pub fn add_magic_byte_records(conds: &Vec<CondStmt>, buf: &Vec<u8>) {
     let mut groups: HashMap<(u32, u32, u32), Vec<&CondStmt>> = HashMap::new();
 
     for cond in conds.iter() {
-        if !cond.is_magic_byte {
+        if !cond.is_const_eq_shape {
             continue;
         }
 
@@ -565,6 +584,23 @@ fn add_dual_label_records(cond: &CondStmt, buf: &Vec<u8>) {
 }
 
 pub fn add_cond_to_pattern_map(cond: &CondStmt, buf: &Vec<u8>) {
+  // A lone 1-byte value never reaches the pool from here: create_single_record
+  // drops any 1-byte single-segment pattern, and the magic path only ever
+  // stores such a cond as part of a merged adjacent run (see
+  // add_magic_byte_records). Both outcomes are "store nothing", so say that
+  // once, here, instead of paying for the re-verification below to discover
+  // it. Guarded on offsets_opt being empty so a dual-label cond whose OTHER
+  // operand is wider still gets its record -- which is every cond that could
+  // reach the is_const_eq_shape check anyway, since that needs exactly one
+  // tainted side and get_offsets_and_variables only fills offsets_opt when
+  // both labels are set.
+  {
+      let pattern = extract_pattern_merged(&cond.offsets);
+      if pattern.len() == 1 && pattern[0] == 1 && cond.offsets_opt.is_empty() {
+          return;
+      }
+  }
+
   // magic-byte conds that pass the untransformed check are handled
   // batch-wide by add_magic_byte_records() instead (needs sibling conds from
   // the same input for offset-adjacency merging, and routes loop-counter
@@ -572,7 +608,7 @@ pub fn add_cond_to_pattern_map(cond: &CondStmt, buf: &Vec<u8>) {
   // into either place though (add_magic_byte_records silently drops it) --
   // so it needs to fall through and get stored here like any other cond,
   // otherwise reusing mutation would have nothing to reuse for it at all.
-  if cond.is_magic_byte && extract_magic_and_tainted(cond, buf).is_some() {
+  if cond.is_const_eq_shape && extract_magic_and_tainted(cond, buf).is_some() {
       return;
   }
 

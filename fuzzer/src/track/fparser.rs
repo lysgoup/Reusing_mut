@@ -96,35 +96,44 @@ pub fn load_track_data(
         }
     }
 
-    group_adjacent_one_byte_magic_bytes(&mut cond_list);
+    tag_adjacent_one_byte_groups(&mut cond_list);
 
     filter::filter_cond_list(&mut cond_list);
 
     cond_list
 }
 
-// finds one-byte magic-byte conds that are adjacent (same context, contiguous
-// offsets) within this single input's cond list, and tags every member with
-// the group's merged offset span via `magic_byte_group`. runs once right after
-// taint tracking, while all sibling conds from this input are still together --
-// once a cond is stored individually (e.g. in the depot queue), its siblings
-// are gone, so this is the only point where the full group is visible.
-fn group_adjacent_one_byte_magic_bytes(cond_list: &mut Vec<CondStmt>) {
-    let mut one_byte_idx: Vec<usize> = cond_list
+// Finds runs of one-byte is_const_eq_shape conds that are adjacent (same
+// context, contiguous offsets, same FN_OP-ness) in this single input's cond
+// list, and stamps every member of a run with the run's merged offset span
+// via `magic_byte_group`. Nothing is merged or removed here -- cond_list is
+// unchanged and each cond keeps its own offsets.
+//
+// Adjacency is decided on OFFSETS, not on execution order: cond_list position
+// only approximates execution order (untainted compares are never logged,
+// MAX_COND_ORDER drops repeats past 16, threads interleave), and measured on
+// real corpora only 0-63% of runs are contiguous in it, per target.
+//
+// Runs once right after taint tracking, while all sibling conds from this
+// input are still together -- once a cond is stored individually (e.g. in the
+// depot queue) its siblings are gone, so this is the only point where the
+// full run is visible.
+fn tag_adjacent_one_byte_groups(cond_list: &mut Vec<CondStmt>) {
+    let mut merge_candidates: Vec<usize> = cond_list
         .iter()
         .enumerate()
-        .filter(|(_, c)| c.is_magic_byte && c.state == CondState::OneByte)
+        .filter(|(_, c)| c.is_const_eq_shape && c.state == CondState::OneByte)
         .map(|(i, _)| i)
         .collect();
-    one_byte_idx.sort_by_key(|&i| (cond_list[i].base.context, cond_list[i].offsets[0].begin));
+    merge_candidates.sort_by_key(|&i| (cond_list[i].base.context, cond_list[i].offsets[0].begin));
 
     let mut k = 0;
-    while k < one_byte_idx.len() {
+    while k < merge_candidates.len() {
         let mut j = k;
-        while j + 1 < one_byte_idx.len() {
-            let cur = &cond_list[one_byte_idx[j]];
-            let next = &cond_list[one_byte_idx[j + 1]];
-            // is_magic_byte only lets FN_OP (memcmp/strcmp/...) or ICMP EQ/NE
+        while j + 1 < merge_candidates.len() {
+            let cur = &cond_list[merge_candidates[j]];
+            let next = &cond_list[merge_candidates[j + 1]];
+            // is_const_eq_shape only lets FN_OP (memcmp/strcmp/...) or ICMP EQ/NE
             // through -- don't glue a memcmp-style byte check to a plain
             // integer-compare byte check just because they're adjacent, they
             // aren't part of the same logical comparison.
@@ -139,10 +148,10 @@ fn group_adjacent_one_byte_magic_bytes(cond_list: &mut Vec<CondStmt>) {
             }
         }
         if j > k {
-            let mut group_span = cond_list[one_byte_idx[k]].offsets[0];
-            group_span.end = cond_list[one_byte_idx[j]].offsets[0].end;
+            let mut group_span = cond_list[merge_candidates[k]].offsets[0];
+            group_span.end = cond_list[merge_candidates[j]].offsets[0].end;
             let group = vec![group_span];
-            for &idx in &one_byte_idx[k..=j] {
+            for &idx in &merge_candidates[k..=j] {
                 cond_list[idx].magic_byte_group = group.clone();
             }
         }

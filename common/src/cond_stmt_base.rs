@@ -76,10 +76,11 @@ impl CondStmtBase {
         (self.op & COND_BASIC_MASK) == COND_SW_OP
     }
 
-    // A magic-byte comparison: input bytes checked against a fixed constant.
-    // Either a string/routine compare (strcmp/memcmp/...) or a single-label
-    // (only one side tainted) equality/inequality against a literal.
-    pub fn is_magic_byte_cmp(&self) -> bool {
+    // Shape only: a routine compare, or an equality against a literal with
+    // one side tainted. A magic-byte CANDIDATE -- whether the bytes actually
+    // reach the compare untransformed is decided per input, later, by
+    // label_pattern_tracker::magic_value_if_untransformed().
+    pub fn is_const_eq_shape(&self) -> bool {
         if self.op == COND_FN_OP {
             return true;
         }

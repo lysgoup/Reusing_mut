@@ -22,7 +22,7 @@ pub struct CondStmt {
     pub reusing_record_index: usize,
     pub reusing_general_record_index: usize,
 
-    pub is_magic_byte: bool,
+    pub is_const_eq_shape: bool,
     // non-empty only for one-byte magic-byte conds that were found adjacent
     // (same context, contiguous offsets) to sibling one-byte conds right after
     // taint tracking. holds the whole group's merged offset span, so this cond
@@ -64,7 +64,7 @@ impl CondStmt {
             linear: false,
             reusing_record_index: 0,
             reusing_general_record_index: 0,
-            is_magic_byte: false,
+            is_const_eq_shape: false,
             magic_byte_group: vec![],
         }
     }
@@ -72,7 +72,7 @@ impl CondStmt {
     pub fn from(cond_base: CondStmtBase) -> Self {
         let mut cond = Self::new();
         cond.base = cond_base;
-        cond.is_magic_byte = cond.base.is_magic_byte_cmp();
+        cond.is_const_eq_shape = cond.base.is_const_eq_shape();
         cond
     }
 
