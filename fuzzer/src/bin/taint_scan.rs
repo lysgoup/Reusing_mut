@@ -342,21 +342,18 @@ fn main() {
         // that flips a site already in the queue) and marks a site done once
         // it has been seen going both ways. Doing it here rather than calling
         // the pool directly keeps those rules Angora's.
-        depot.add_entries(conds.clone(), &buf);
+        // What comes back is the span each adjacent-run member was actually
+        // filed under -- NOT cond.magic_byte_group, which is the pre-verification
+        // tag. A member whose comparison turned out to be transformed splits its
+        // group, and the surviving parts are shorter than that tag; a leftover
+        // part under two bytes is not filed at all and is absent here. Writing
+        // the tag instead would send a reader to a pool length nothing was ever
+        // stored under.
+        let groups = depot.add_entries(conds.clone(), &buf);
 
         // The same track file the conds came from, re-read for the parts the
         // fuzzer's own parser wants (the tag table). Cheap next to the run.
         if let Ok(log) = get_log_data(&track_path) {
-            let groups: HashMap<(u32, u32, u32), TagSeg> = conds
-                .iter()
-                .filter(|c| !c.magic_byte_group.is_empty())
-                .map(|c| {
-                    (
-                        (c.base.cmpid, c.base.context, c.base.order),
-                        c.magic_byte_group[0],
-                    )
-                })
-                .collect();
             write_dtaint(&cache_dir.join(format!("{}.dtaint", name)), &log, &groups);
         }
 

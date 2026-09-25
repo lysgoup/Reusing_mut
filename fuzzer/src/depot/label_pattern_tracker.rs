@@ -349,8 +349,22 @@ pub fn extract_magic_and_tainted(cond: &CondStmt, buf: &Vec<u8>) -> Option<(Vec<
 // pre-computed grouping to build the combined record; a 1-byte cond with no
 // tagged group (no adjacent same-context sibling in this input) is dropped,
 // matching prior behavior.
-pub fn add_magic_byte_records(conds: &Vec<CondStmt>, buf: &Vec<u8>) {
+///
+/// Returns, for every member cond of an adjacent-run group, the span that was
+/// ACTUALLY stored for it -- which is the run it ended up in, not the group
+/// tag_adjacent_one_byte_groups stamped on it. A member whose comparison
+/// turned out to be transformed splits its group, so the surviving parts are
+/// shorter than the tag, and a leftover part under two bytes is not stored at
+/// all and gets no entry here. Callers that persist this input's taint (see
+/// bin/taint_scan.rs) must record THIS span, or a reader would look the group
+/// up in the pool under a length nothing was ever filed under.
+pub fn add_magic_byte_records(
+    conds: &Vec<CondStmt>,
+    buf: &Vec<u8>,
+) -> HashMap<(u32, u32, u32), TagSeg> {
     flag_loop_counters_in_batch(conds);
+
+    let mut stored_spans: HashMap<(u32, u32, u32), TagSeg> = HashMap::new();
 
     let mut groups: HashMap<(u32, u32, u32), Vec<&CondStmt>> = HashMap::new();
 
@@ -393,6 +407,9 @@ pub fn add_magic_byte_records(conds: &Vec<CondStmt>, buf: &Vec<u8>) {
         let mut run_magic: Vec<u8> = Vec::new();
         let mut run_tainted: Vec<u8> = Vec::new();
         let mut run_cmpid: u32 = 0;
+        // keys of the members feeding the run being built, so a flush can tell
+        // each of them which span it was actually filed under
+        let mut run_keys: Vec<(u32, u32, u32)> = Vec::new();
         // tracks this run's own span (may be a sub-span of the full group if
         // a member failed verification and split the run) -- collapsed via
         // merge_continuous_segments below into the single TagSeg this run's
@@ -408,25 +425,35 @@ pub fn add_magic_byte_records(conds: &Vec<CondStmt>, buf: &Vec<u8>) {
                     run_magic.extend_from_slice(&m);
                     run_tainted.extend_from_slice(&t);
                     run_offsets.push(cond.offsets[0]);
+                    run_keys.push((cond.base.cmpid, cond.base.context, cond.base.order));
                 },
                 None => {
                     if run_magic.len() >= 2 {
                         let pattern = vec![run_magic.len() as u32];
                         let offsets = merge_continuous_segments(&run_offsets);
+                        for k in &run_keys {
+                            stored_spans.insert(*k, offsets[0]);
+                        }
                         insert_magic_byte_value(pattern, run_magic.clone(), run_tainted.clone(), run_cmpid, offsets);
                     }
                     run_magic.clear();
                     run_tainted.clear();
                     run_offsets.clear();
+                    run_keys.clear();
                 },
             }
         }
         if run_magic.len() >= 2 {
             let pattern = vec![run_magic.len() as u32];
             let offsets = merge_continuous_segments(&run_offsets);
+            for k in &run_keys {
+                stored_spans.insert(*k, offsets[0]);
+            }
             insert_magic_byte_value(pattern, run_magic, run_tainted, run_cmpid, offsets);
         }
     }
+
+    stored_spans
 }
 
 pub fn extract_pattern(offsets: &Vec<TagSeg>) -> LabelPattern {

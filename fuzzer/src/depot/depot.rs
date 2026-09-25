@@ -3,7 +3,7 @@ use crate::{cond_stmt::CondStmt, executor::StatusType};
 use crate::depot::label_pattern_tracker;
 use rand;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs,
     io::prelude::*,
     mem,
@@ -111,10 +111,19 @@ impl Depot {
             })
     }
 
-    pub fn add_entries(&self, conds: Vec<CondStmt>, buf: &Vec<u8>) {
-        if self.enable_reusing {
-            label_pattern_tracker::add_magic_byte_records(&conds, buf);
-        }
+    /// Returns what add_magic_byte_records() actually filed for each
+    /// adjacent-run member -- see its doc comment. Callers that only fuzz can
+    /// drop it; bin/taint_scan.rs needs it to write correct .dtaint spans.
+    pub fn add_entries(
+        &self,
+        conds: Vec<CondStmt>,
+        buf: &Vec<u8>,
+    ) -> HashMap<(u32, u32, u32), angora_common::tag::TagSeg> {
+        let stored_spans = if self.enable_reusing {
+            label_pattern_tracker::add_magic_byte_records(&conds, buf)
+        } else {
+            HashMap::new()
+        };
 
         let mut q = match self.queue.lock() {
             Ok(guard) => guard,
@@ -169,11 +178,16 @@ impl Depot {
         if self.enable_reusing {
             label_pattern_tracker::print_stats();
         }
+
+        stored_spans
     }
 
     pub fn add_entries_with_filter(&self, conds: Vec<CondStmt>, mutated_offsets: &HashSet<u32>, buf: &Vec<u8>) {
         if self.enable_reusing {
-            label_pattern_tracker::add_magic_byte_records(&conds, buf);
+            // the per-cond stored spans matter only where this input's taint is
+            // persisted (bin/taint_scan.rs); in the fuzzing loop the conds stay
+            // in memory and carry their own magic_byte_group.
+            let _ = label_pattern_tracker::add_magic_byte_records(&conds, buf);
         }
 
         let mut q = match self.queue.lock() {
