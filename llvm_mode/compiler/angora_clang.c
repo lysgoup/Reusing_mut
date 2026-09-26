@@ -327,6 +327,10 @@ static void edit_params(u32 argc, char **argv) {
     cc_params[cc_par_cnt++] = "-g";
     cc_params[cc_par_cnt++] = "-O3";
     cc_params[cc_par_cnt++] = "-funroll-loops";
+    /* -O1+ turns memcmp(..)==0 into bcmp or expands it inline, either way
+       leaving no CallInst for the cmpfn rules to hook -- so magic-string
+       checks never reach value_pool.dict. */
+    cc_params[cc_par_cnt++] = "-fno-builtin";
   }
 
   /*
