@@ -327,10 +327,22 @@ static void edit_params(u32 argc, char **argv) {
     cc_params[cc_par_cnt++] = "-g";
     cc_params[cc_par_cnt++] = "-O3";
     cc_params[cc_par_cnt++] = "-funroll-loops";
-    /* -O1+ turns memcmp(..)==0 into bcmp or expands it inline, either way
-       leaving no CallInst for the cmpfn rules to hook -- so magic-string
-       checks never reach value_pool.dict. */
-    cc_params[cc_par_cnt++] = "-fno-builtin";
+    /* Stops -O1+ from expanding a short memcmp(..)==0 inline (a 4-byte ELF
+       magic becomes an integer compare, no call at all), which no cmpfn rule
+       can recover. Worth 38 new pool entries on nm against 11 for the bcmp
+       rule alone -- the bcmp rule only catches the longer comparisons, which
+       survive as a bcmp call rather than being expanded.
+
+       It is not free: blocking *every* builtin also stops memcpy/strlen/
+       memset from being expanded, and on a target that leans on them the
+       extra calls inflate the cond count and push borderline seeds past the
+       track timeout (objdump: 24% -> 30%, with its icmp count up ~85 per
+       seed). Such a target sets ANGORA_KEEP_BUILTINS=1 in its own
+       angora-reusing-target build block and relies on the bcmp rule, which
+       is inert here -- with -fno-builtin no bcmp call is ever emitted. */
+    if (!getenv("ANGORA_KEEP_BUILTINS")) {
+      cc_params[cc_par_cnt++] = "-fno-builtin";
+    }
   }
 
   /*
